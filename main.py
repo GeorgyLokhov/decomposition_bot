@@ -8,6 +8,7 @@ from io import BytesIO
 from typing import Dict, List, Optional, Set
 import time
 import aiohttp
+import hashlib
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters.command import Command
@@ -47,6 +48,9 @@ class ProcessStates(StatesGroup):
 # Глобальное хранилище данных пользователей
 user_data: Dict[int, Dict] = {}
 
+# Глобальное хранилище для callback_data маппинга
+callback_mappings: Dict[str, str] = {}
+
 # === KEEP-ALIVE МЕХАНИЗМ ===
 async def keep_alive():
     """Поддержание активности сервера каждые 14 минут"""
@@ -67,6 +71,22 @@ async def keep_alive():
                     
         except Exception as e:
             logger.error(f"❌ Keep-alive error: {e}")
+
+def generate_callback_id(text: str) -> str:
+    """Генерирует короткий ID для callback_data из текста"""
+    # Создаем хеш из текста и берем первые 8 символов
+    hash_object = hashlib.md5(text.encode())
+    return hash_object.hexdigest()[:8]
+
+def register_callback(prefix: str, value: str) -> str:
+    """Регистрирует callback_data и возвращает короткий ID"""
+    callback_id = f"{prefix}_{generate_callback_id(value)}"
+    callback_mappings[callback_id] = value
+    return callback_id
+
+def get_callback_value(callback_id: str) -> str:
+    """Получает исходное значение по callback ID"""
+    return callback_mappings.get(callback_id, "")
 
 # === КОНСТАНТЫ ===
 MOSCOW_REGION_CITIES = {
@@ -244,15 +264,22 @@ def get_unique_values(df: pd.DataFrame, column: str) -> List[str]:
     return sorted([str(val) for val in unique_vals if str(val).strip() and str(val) != 'nan'])
 
 def create_filter_keyboard(options: List[str], selected: Set[str], callback_prefix: str) -> InlineKeyboardMarkup:
-    """Создание клавиатуры для выбора фильтров"""
+    """Создание клавиатуры для выбора фильтров с безопасными callback_data"""
     keyboard = []
     
     # Ограничиваем количество опций для удобства
     for option in options[:20]:  # Максимум 20 опций
         status = "✅" if option in selected else "⬜"
+        
+        # Создаем безопасный callback_data используя индекс
+        callback_id = register_callback(callback_prefix, option)
+        
+        # Обрезаем текст кнопки до 40 символов
+        display_text = option[:40] + "..." if len(option) > 40 else option
+        
         keyboard.append([InlineKeyboardButton(
-            text=f"{status} {option[:40]}...", 
-            callback_data=f"{callback_prefix}:{option}"
+            text=f"{status} {display_text}", 
+            callback_data=callback_id
         )])
     
     if len(options) > 20:
@@ -492,13 +519,14 @@ async def filter_address_types_callback(callback: types.CallbackQuery, state: FS
     )
     await state.set_state(ProcessStates.select_address_types)
 
-@dp.callback_query(F.data.startswith("addr_type:"))
+@dp.callback_query(F.data.startswith("addr_type_"))
 async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
     """Переключение выбора типа адреса"""
     user_id = callback.from_user.id
-    address_type = callback.data.split(":", 1)[1]
+    callback_id = callback.data
+    address_type = get_callback_value(callback_id)
     
-    if user_id not in user_data:
+    if user_id not in user_data or not address_type:
         await callback.answer("❌ Данные не найдены!")
         return
     
@@ -506,10 +534,10 @@ async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
     
     if address_type in selected:
         selected.remove(address_type)
-        await callback.answer(f"❌ Отменено: {address_type}")
+        await callback.answer(f"❌ Отменено: {address_type[:30]}...")
     else:
         selected.add(address_type)
-        await callback.answer(f"✅ Выбрано: {address_type}")
+        await callback.answer(f"✅ Выбрано: {address_type[:30]}...")
     
     # Обновляем клавиатуру
     df = user_data[user_id]['df_original']
@@ -563,13 +591,14 @@ async def filter_auto_flags_callback(callback: types.CallbackQuery, state: FSMCo
     )
     await state.set_state(ProcessStates.select_new_auto_flag)
 
-@dp.callback_query(F.data.startswith("auto_flag:"))
+@dp.callback_query(F.data.startswith("auto_flag_"))
 async def toggle_auto_flag(callback: types.CallbackQuery, state: FSMContext):
     """Переключение выбора флага авто"""
     user_id = callback.from_user.id
-    auto_flag = callback.data.split(":", 1)[1]
+    callback_id = callback.data
+    auto_flag = get_callback_value(callback_id)
     
-    if user_id not in user_data:
+    if user_id not in user_data or not auto_flag:
         await callback.answer("❌ Данные не найдены!")
         return
     
@@ -577,10 +606,10 @@ async def toggle_auto_flag(callback: types.CallbackQuery, state: FSMContext):
     
     if auto_flag in selected:
         selected.remove(auto_flag)
-        await callback.answer(f"❌ Отменено: {auto_flag}")
+        await callback.answer(f"❌ Отменено: {auto_flag[:30]}...")
     else:
         selected.add(auto_flag)
-        await callback.answer(f"✅ Выбрано: {auto_flag}")
+        await callback.answer(f"✅ Выбрано: {auto_flag[:30]}...")
     
     # Обновляем клавиатуру
     df = user_data[user_id]['df_original']
@@ -664,6 +693,11 @@ async def reset_filters_callback(callback: types.CallbackQuery, state: FSMContex
     data['selected_address_types'].clear()
     data['selected_auto_flags'].clear()
     data['df_filtered'] = data['df_original'].copy()
+    
+    # Очищаем callback mappings для этого пользователя
+    keys_to_remove = [k for k in callback_mappings.keys() if k.startswith(('addr_type_', 'auto_flag_'))]
+    for key in keys_to_remove:
+        callback_mappings.pop(key, None)
     
     await add_filters_callback(callback, state)
 
