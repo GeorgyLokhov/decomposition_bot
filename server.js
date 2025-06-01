@@ -560,6 +560,39 @@ async function applyFiltersAndCreateFiles(chatId, userState) {
   }
 }
 
+// ====== EXPRESS ENDPOINTS ======
+
+// Health check
+app.get('/', (req, res) => {
+  res.send('Bot is running!');
+});
+
+// Endpoint для установки webhook
+app.get('/registerWebhook', async (req, res) => {
+  try {
+    const webhookUrl = `${req.protocol}://${req.get('host')}/webhook`;
+    const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: webhookUrl })
+    });
+    const result = await response.json();
+    
+    res.json({
+      success: true,
+      webhook_url: webhookUrl,
+      telegram_response: result,
+      message: result.ok ? 'Webhook успешно установлен!' : 'Ошибка установки webhook'
+    });
+  } catch (error) {
+    console.error('Error setting webhook:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Webhook endpoint
 app.post('/webhook', async (req, res) => {
   try {
@@ -569,11 +602,6 @@ app.post('/webhook', async (req, res) => {
     console.error('Webhook error:', error);
     res.sendStatus(500);
   }
-});
-
-// Health check
-app.get('/', (req, res) => {
-  res.send('Bot is running!');
 });
 
 // Установка webhook при запуске
