@@ -18,7 +18,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Токен бота
 BOT_TOKEN = "7513294224:AAE9BN38NiITd2TmKNrslAprqzyDLWP5vuE"
@@ -141,7 +145,11 @@ def extract_license_plate(text):
     if found_plates:
         return found_plates[0]
 
-    text_clean = text.replace(' ', '').replace(',', ' ').split()[-1]
+    text_clean = text.replace(' ', '').replace(',', ' ').split()
+    if not text_clean:
+        return ""
+    
+    text_clean = text_clean[-1]
 
     if len(text_clean) >= 8:
         last_3 = text_clean[-3:]
@@ -169,15 +177,20 @@ def remove_license_plate(text, plate):
 async def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Обработка DataFrame с очисткой адресов и извлечением номеров"""
     
+    logger.info(f"Начинаем обработку DataFrame с {len(df)} записями")
+    
     # 1. Фильтрация по региону (Москва и Подмосковье)
     address_cols = [col for col in df.columns if any(word in col.lower() 
                    for word in ['адрес', 'address'])]
     
     if address_cols:
         address_col = address_cols[0]
+        logger.info(f"Найден столбец с адресами: {address_col}")
+        
         # Фильтруем только записи из Москвы и Подмосковья
         moscow_mask = df[address_col].apply(is_moscow_region)
         df = df[moscow_mask].copy()
+        logger.info(f"После фильтрации по региону осталось {len(df)} записей")
         
         # Очищаем адреса
         df[address_col] = df[address_col].apply(smart_clean_address)
@@ -185,16 +198,19 @@ async def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # 2. Извлечение номерных знаков
     auto_data_col = "ДАННЫЕ АВТО"
     if auto_data_col in df.columns:
+        logger.info(f"Извлекаем номерные знаки из столбца: {auto_data_col}")
+        
         auto_data_index = df.columns.get_loc(auto_data_col)
         license_plates = df[auto_data_col].apply(extract_license_plate)
         df.insert(auto_data_index + 1, "НОМЕРНОЙ ЗНАК", license_plates)
 
         for i in range(len(df)):
-            original_text = df.loc[i, auto_data_col]
-            plate = df.loc[i, "НОМЕРНОЙ ЗНАК"]
+            original_text = df.iloc[i][auto_data_col]
+            plate = df.iloc[i]["НОМЕРНОЙ ЗНАК"]
             if plate:
-                df.loc[i, auto_data_col] = remove_license_plate(original_text, plate)
+                df.iloc[i, df.columns.get_loc(auto_data_col)] = remove_license_plate(original_text, plate)
 
+    logger.info("Обработка DataFrame завершена")
     return df
 
 def get_unique_values(df: pd.DataFrame, column: str) -> List[str]:
@@ -203,17 +219,24 @@ def get_unique_values(df: pd.DataFrame, column: str) -> List[str]:
         return []
     
     unique_vals = df[column].dropna().unique()
-    return sorted([str(val) for val in unique_vals if str(val).strip()])
+    return sorted([str(val) for val in unique_vals if str(val).strip() and str(val) != 'nan'])
 
 def create_filter_keyboard(options: List[str], selected: Set[str], callback_prefix: str) -> InlineKeyboardMarkup:
     """Создание клавиатуры для выбора фильтров"""
     keyboard = []
     
-    for option in options:
+    # Ограничиваем количество опций для удобства
+    for option in options[:20]:  # Максимум 20 опций
         status = "✅" if option in selected else "⬜"
         keyboard.append([InlineKeyboardButton(
-            text=f"{status} {option}", 
+            text=f"{status} {option[:40]}...", 
             callback_data=f"{callback_prefix}:{option}"
+        )])
+    
+    if len(options) > 20:
+        keyboard.append([InlineKeyboardButton(
+            text=f"... и еще {len(options) - 20} вариантов",
+            callback_data="show_more"
         )])
     
     keyboard.append([
@@ -279,15 +302,35 @@ async def handle_file(message: types.Message, state: FSMContext):
     loading_msg = await message.answer("⏳ Загружаю и обрабатываю файл...")
     
     try:
+        logger.info(f"Получен файл: {document.file_name}, размер: {document.file_size} байт")
+        
         # Скачиваем файл
-        file = await bot.get_file(document.file_id)
-        file_content = await bot.download_file(file.file_path)
+        file_info = await bot.get_file(document.file_id)
+        file_content = await bot.download_file(file_info.file_path)
+        
+        # Читаем данные в память
+        file_bytes = file_content.read()
         
         # Читаем файл в DataFrame
         if document.file_name.endswith('.csv'):
-            df = pd.read_csv(BytesIO(file_content), encoding='utf-8')
+            # Пробуем разные кодировки
+            encodings = ['utf-8', 'windows-1251', 'cp1251', 'latin-1']
+            df = None
+            
+            for encoding in encodings:
+                try:
+                    df = pd.read_csv(BytesIO(file_bytes), encoding=encoding)
+                    logger.info(f"Файл успешно прочитан с кодировкой: {encoding}")
+                    break
+                except UnicodeDecodeError:
+                    continue
+            
+            if df is None:
+                raise ValueError("Не удалось прочитать CSV файл с поддерживаемыми кодировками")
         else:
-            df = pd.read_excel(BytesIO(file_content))
+            df = pd.read_excel(BytesIO(file_bytes))
+        
+        logger.info(f"Файл загружен, строк: {len(df)}, столбцов: {len(df.columns)}")
         
         # Обрабатываем DataFrame
         df_processed = await process_dataframe(df)
@@ -326,6 +369,7 @@ async def handle_file(message: types.Message, state: FSMContext):
         await state.set_state(ProcessStates.choose_filters)
         
     except Exception as e:
+        logger.error(f"Ошибка при обработке файла: {str(e)}")
         await loading_msg.edit_text(f"❌ Ошибка при обработке файла: {str(e)}")
         await state.clear()
 
@@ -333,6 +377,11 @@ async def handle_file(message: types.Message, state: FSMContext):
 async def add_filters_callback(callback: types.CallbackQuery, state: FSMContext):
     """Выбор типа фильтров"""
     user_id = callback.from_user.id
+    
+    if user_id not in user_data:
+        await callback.message.edit_text("❌ Данные не найдены. Загрузите файл заново.")
+        return
+    
     df = user_data[user_id]['df_original']
     
     # Проверяем доступные столбцы для фильтрации
@@ -380,6 +429,11 @@ async def add_filters_callback(callback: types.CallbackQuery, state: FSMContext)
 async def filter_address_types_callback(callback: types.CallbackQuery, state: FSMContext):
     """Фильтр по типам адресов"""
     user_id = callback.from_user.id
+    
+    if user_id not in user_data:
+        await callback.answer("❌ Данные не найдены!")
+        return
+        
     df = user_data[user_id]['df_original']
     
     # Находим столбец с типами адресов
@@ -416,6 +470,10 @@ async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     address_type = callback.data.split(":", 1)[1]
     
+    if user_id not in user_data:
+        await callback.answer("❌ Данные не найдены!")
+        return
+    
     selected = user_data[user_id]['selected_address_types']
     
     if address_type in selected:
@@ -439,6 +497,11 @@ async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
 async def filter_auto_flags_callback(callback: types.CallbackQuery, state: FSMContext):
     """Фильтр по флагам нового авто"""
     user_id = callback.from_user.id
+    
+    if user_id not in user_data:
+        await callback.answer("❌ Данные не найдены!")
+        return
+        
     df = user_data[user_id]['df_original']
     
     # Находим столбец с флагами
@@ -475,6 +538,10 @@ async def toggle_auto_flag(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     auto_flag = callback.data.split(":", 1)[1]
     
+    if user_id not in user_data:
+        await callback.answer("❌ Данные не найдены!")
+        return
+    
     selected = user_data[user_id]['selected_auto_flags']
     
     if auto_flag in selected:
@@ -498,6 +565,11 @@ async def toggle_auto_flag(callback: types.CallbackQuery, state: FSMContext):
 async def apply_filters_callback(callback: types.CallbackQuery, state: FSMContext):
     """Применение выбранных фильтров"""
     user_id = callback.from_user.id
+    
+    if user_id not in user_data:
+        await callback.answer("❌ Данные не найдены!")
+        return
+        
     data = user_data[user_id]
     
     df = data['df_original'].copy()
@@ -546,6 +618,11 @@ async def apply_filters_callback(callback: types.CallbackQuery, state: FSMContex
 async def reset_filters_callback(callback: types.CallbackQuery, state: FSMContext):
     """Сброс всех фильтров"""
     user_id = callback.from_user.id
+    
+    if user_id not in user_data:
+        await callback.answer("❌ Данные не найдены!")
+        return
+        
     data = user_data[user_id]
     
     data['selected_address_types'].clear()
@@ -570,6 +647,10 @@ async def export_files_callback(callback: types.CallbackQuery, state: FSMContext
 async def export_files(message: types.Message, user_id: int, state: FSMContext):
     """Экспорт файлов с разделением на части"""
     try:
+        if user_id not in user_data:
+            await message.edit_text("❌ Данные не найдены. Загрузите файл заново.")
+            return
+            
         data = user_data[user_id]
         df = data['df_filtered']
         filename = data['filename']
@@ -577,6 +658,8 @@ async def export_files(message: types.Message, user_id: int, state: FSMContext):
         total_rows = len(df)
         chunk_size = 2000
         num_parts = (total_rows + chunk_size - 1) // chunk_size
+        
+        logger.info(f"Начинаем экспорт {total_rows} записей в {num_parts} частях")
         
         # Отправляем инструкцию
         instruction_message = (
@@ -612,6 +695,8 @@ async def export_files(message: types.Message, user_id: int, state: FSMContext):
                 caption=f"📄 Часть {part_num} из {num_parts}"
             )
             
+            logger.info(f"Отправлена часть {part_num}/{num_parts}")
+            
             # Небольшая задержка между отправками
             await asyncio.sleep(0.5)
         
@@ -637,8 +722,10 @@ async def export_files(message: types.Message, user_id: int, state: FSMContext):
         )
         
         await state.clear()
+        logger.info("Экспорт файлов завершен успешно")
         
     except Exception as e:
+        logger.error(f"Ошибка при экспорте: {str(e)}")
         await message.edit_text(f"❌ Ошибка при экспорте: {str(e)}")
         await state.clear()
 
@@ -646,7 +733,32 @@ async def export_files(message: types.Message, user_id: int, state: FSMContext):
 async def start_callback(callback: types.CallbackQuery, state: FSMContext):
     """Возврат в главное меню"""
     await state.clear()
-    await cmd_start(callback.message, state)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📁 Загрузить файл", callback_data="upload_file")]
+    ])
+    
+    welcome_text = """
+🚗 **Добро пожаловать в бот обработки данных розыска авто!**
+
+**Возможности бота:**
+• 📍 Фильтрация по региону (Москва и Подмосковье)
+• 🧹 Умная очистка адресов
+• 🔢 Извлечение номерных знаков
+• 🗂 Разделение больших файлов на части
+• 🎯 Фильтрация по типам адресов и флагам
+
+**Поддерживаемые форматы:** CSV, Excel (.xlsx, .xls)
+
+Нажмите кнопку ниже, чтобы начать!
+    """
+    
+    await callback.message.edit_text(welcome_text, reply_markup=keyboard, parse_mode='Markdown')
+
+@dp.callback_query(F.data == "show_more")
+async def show_more_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка нажатия на "показать больше" """
+    await callback.answer("💡 Для просмотра всех вариантов используйте поиск по файлу")
 
 # Обработчик других сообщений
 @dp.message()
@@ -667,11 +779,11 @@ async def other_messages(message: types.Message, state: FSMContext):
 # FastAPI endpoints для render.com
 @app.get("/")
 async def root():
-    return {"status": "Bot is running"}
+    return {"status": "Bot is running", "message": "Telegram bot is active"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    return {"status": "healthy", "timestamp": time.time()}
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -682,27 +794,45 @@ async def webhook(request: Request):
         await dp.feed_update(bot, update)
         return JSONResponse({"status": "ok"})
     except Exception as e:
-        logging.error(f"Webhook error: {e}")
-        return JSONResponse({"status": "error", "message": str(e)})
+        logger.error(f"Webhook error: {e}")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
-async def on_startup():
-    """Инициализация при запуске"""
-    # Устанавливаем webhook
-    webhook_url = "https://rozysk-avto-bot.onrender.com/webhook"
-    await bot.set_webhook(webhook_url)
-    logging.info(f"Webhook set to {webhook_url}")
+async def set_webhook():
+    """Установка webhook"""
+    try:
+        webhook_url = "https://rozysk-avto-bot.onrender.com/webhook"
+        await bot.set_webhook(webhook_url)
+        logger.info(f"Webhook установлен: {webhook_url}")
+    except Exception as e:
+        logger.error(f"Ошибка установки webhook: {e}")
 
-async def on_shutdown():
-    """Очистка при завершении"""
-    await bot.delete_webhook()
-    await bot.session.close()
+async def main():
+    """Основная функция запуска"""
+    try:
+        # Устанавливаем webhook
+        await set_webhook()
+        
+        # Запускаем приложение
+        import uvicorn
+        config = uvicorn.Config(
+            app=app,
+            host="0.0.0.0",
+            port=int(os.environ.get("PORT", 10000)),
+            log_level="info",
+            access_log=True
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+        
+    except Exception as e:
+        logger.error(f"Ошибка запуска: {e}")
+    finally:
+        try:
+            await bot.delete_webhook()
+            await bot.session.close()
+        except:
+            pass
 
-# Запуск FastAPI сервера
+# Запуск приложения
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8000)),
-        log_level="info"
-    )
+    asyncio.run(main())
