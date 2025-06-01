@@ -3,7 +3,7 @@ import logging
 import os
 import pandas as pd
 import re
-import aiofiles
+import gc
 from io import BytesIO
 from typing import Dict, List, Optional, Set
 import time
@@ -27,8 +27,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Токен бота
-BOT_TOKEN = "7513294224:AAE9BN38NiITd2TmKNrslAprqzyDLWP5vuE"
+# Токен бота из переменных окружения
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+if not BOT_TOKEN:
+    logger.error('❌ BOT_TOKEN не установлен в переменных окружения!')
+    raise RuntimeError('BOT_TOKEN не установлен в переменных окружения!')
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
@@ -69,6 +72,27 @@ def register_callback(prefix: str, value: str) -> str:
 def get_callback_value(callback_id: str) -> str:
     """Получает исходное значение по callback ID"""
     return callback_mappings.get(callback_id, "")
+
+# === KEEP-ALIVE BACKGROUND TASK ===
+async def keep_alive_background():
+    """Фоновая задача для поддержания активности"""
+    while is_running:
+        try:
+            await asyncio.sleep(14 * 60)  # 14 минут
+            
+            # Самопинг сервера
+            async with aiohttp.ClientSession() as session:
+                try:
+                    async with session.get('https://rozysk-avto-bot.onrender.com/health', timeout=10) as response:
+                        if response.status == 200:
+                            logger.info("✅ Keep-alive ping successful")
+                        else:
+                            logger.warning(f"⚠️ Keep-alive ping returned status: {response.status}")
+                except Exception as e:
+                    logger.error(f"❌ Keep-alive ping failed: {e}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Keep-alive background task error: {e}")
 
 # === КОНСТАНТЫ ===
 MOSCOW_REGION_CITIES = {
@@ -167,7 +191,7 @@ def extract_license_plate(text):
         found_plates.extend(matches)
 
     if found_plates:
-        return found_plates[0]
+        return found_plates[0]  # ИСПРАВЛЕНО: возвращаем первый найденный
 
     text_clean = text.replace(' ', '').replace(',', ' ').split()
     if not text_clean:
@@ -208,7 +232,7 @@ async def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                    for word in ['адрес', 'address'])]
     
     if address_cols:
-        address_col = address_cols[0]
+        address_col = address_cols[0]  # ИСПРАВЛЕНО: берем первый столбец
         logger.info(f"Найден столбец с адресами: {address_col}")
         
         # Фильтруем только записи из Москвы и Подмосковья
@@ -235,6 +259,10 @@ async def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                 df.iloc[i, df.columns.get_loc(auto_data_col)] = remove_license_plate(original_text, plate)
 
     logger.info("Обработка DataFrame завершена")
+    
+    # Принудительная очистка памяти
+    gc.collect()
+    
     return df
 
 def get_unique_values(df: pd.DataFrame, column: str) -> List[str]:
@@ -312,7 +340,7 @@ async def upload_file_callback(callback: types.CallbackQuery, state: FSMContext)
     await callback.message.edit_text(
         "📁 **Загрузите файл для обработки**\n\n"
         "Поддерживаемые форматы: CSV, Excel (.xlsx, .xls)\n"
-        "Максимальный размер: 20 МБ",
+        "Максимальный размер: 10 МБ",
         parse_mode='Markdown'
     )
     await state.set_state(ProcessStates.waiting_file)
@@ -327,9 +355,9 @@ async def handle_file(message: types.Message, state: FSMContext):
         await message.answer("❌ Поддерживаются только CSV и Excel файлы!")
         return
     
-    # Проверка размера файла (20 МБ)
-    if document.file_size > 20 * 1024 * 1024:
-        await message.answer("❌ Файл слишком большой! Максимальный размер: 20 МБ")
+    # Проверка размера файла
+    if document.file_size > 10 * 1024 * 1024:  # 10 МБ
+        await message.answer("❌ Файл слишком большой! Максимальный размер: 10 МБ")
         return
     
     loading_msg = await message.answer("⏳ Загружаю и обрабатываю файл...")
@@ -364,6 +392,10 @@ async def handle_file(message: types.Message, state: FSMContext):
             df = pd.read_excel(BytesIO(file_bytes))
         
         logger.info(f"Файл загружен, строк: {len(df)}, столбцов: {len(df.columns)}")
+        
+        # Очищаем память от данных файла
+        del file_bytes
+        gc.collect()
         
         # Обрабатываем DataFrame
         df_processed = await process_dataframe(df)
@@ -420,14 +452,17 @@ async def add_filters_callback(callback: types.CallbackQuery, state: FSMContext)
     df = user_data[user_id]['df_original']
     
     # Проверяем доступные столбцы для фильтрации
-    address_cols = [col for col in df.columns if any(word in col.lower() 
-                   for word in ['адрес', 'address', 'тип'])]
+    # ИСПРАВЛЕНО: правильный поиск столбца "ТИП АДРЕСА"
+    address_type_cols = [col for col in df.columns if 'тип' in col.lower() and 'адрес' in col.lower()]
+    if not address_type_cols:
+        address_type_cols = [col for col in df.columns if 'тип' in col.lower()]
+    
     auto_flag_cols = [col for col in df.columns if any(word in col.lower() 
                      for word in ['флаг', 'новый', 'flag', 'new'])]
     
     buttons = []
     
-    if address_cols:
+    if address_type_cols:
         buttons.append([InlineKeyboardButton(
             text="📍 Фильтр по типам адресов", 
             callback_data="filter_address_types"
@@ -473,16 +508,13 @@ async def filter_address_types_callback(callback: types.CallbackQuery, state: FS
         
     df = user_data[user_id]['df_original']
     
-    # ИСПРАВЛЕННЫЙ поиск столбца с типами адресов
+    # ИСПРАВЛЕННЫЙ поиск столбца "ТИП АДРЕСА"
     address_type_cols = [col for col in df.columns if 'тип' in col.lower() and 'адрес' in col.lower()]
-    
-    # Если не найден точный столбец, ищем просто "тип"
     if not address_type_cols:
         address_type_cols = [col for col in df.columns if 'тип' in col.lower()]
     
-    # Если и так не найден, показываем доступные столбцы
     if not address_type_cols:
-        available_cols = [col for col in df.columns]
+        available_cols = list(df.columns)
         await callback.message.edit_text(
             f"❌ Столбец с типами адресов не найден!\n\n"
             f"Доступные столбцы:\n" + "\n".join(f"• {col}" for col in available_cols[:10])
@@ -509,7 +541,6 @@ async def filter_address_types_callback(callback: types.CallbackQuery, state: FS
     )
     await state.set_state(ProcessStates.select_address_types)
 
-
 @dp.callback_query(F.data.startswith("addr_type_"))
 async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
     """Переключение выбора типа адреса"""
@@ -532,8 +563,10 @@ async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
     
     # Обновляем клавиатуру
     df = user_data[user_id]['df_original']
-    address_type_cols = [col for col in df.columns if any(word in col.lower() 
-                        for word in ['тип', 'type', 'адрес'])]
+    address_type_cols = [col for col in df.columns if 'тип' in col.lower() and 'адрес' in col.lower()]
+    if not address_type_cols:
+        address_type_cols = [col for col in df.columns if 'тип' in col.lower()]
+    
     address_type_col = address_type_cols[0]
     unique_types = get_unique_values(df, address_type_col)
     
@@ -632,8 +665,10 @@ async def apply_filters_callback(callback: types.CallbackQuery, state: FSMContex
     
     # Применяем фильтры
     if selected_addr_types:
-        address_type_cols = [col for col in df.columns if any(word in col.lower() 
-                            for word in ['тип', 'type', 'адрес'])]
+        address_type_cols = [col for col in df.columns if 'тип' in col.lower() and 'адрес' in col.lower()]
+        if not address_type_cols:
+            address_type_cols = [col for col in df.columns if 'тип' in col.lower()]
+        
         if address_type_cols:
             addr_col = address_type_cols[0]
             df = df[df[addr_col].isin(selected_addr_types)]
@@ -787,6 +822,10 @@ async def export_files(message: types.Message, user_id: int, state: FSMContext):
         await state.clear()
         logger.info("Экспорт файлов завершен успешно")
         
+        # Очищаем память
+        del df
+        gc.collect()
+        
     except Exception as e:
         logger.error(f"Ошибка при экспорте: {str(e)}")
         await message.edit_text(f"❌ Ошибка при экспорте: {str(e)}")
@@ -839,27 +878,6 @@ async def other_messages(message: types.Message, state: FSMContext):
         await message.answer(
             "❓ Не понимаю команду. Нажмите /start для начала работы."
         )
-
-# === KEEP-ALIVE BACKGROUND TASK ===
-async def keep_alive_background():
-    """Фоновая задача для поддержания активности"""
-    while is_running:
-        try:
-            await asyncio.sleep(14 * 60)  # 14 минут
-            
-            # Самопинг сервера
-            async with aiohttp.ClientSession() as session:
-                try:
-                    async with session.get('https://rozysk-avto-bot.onrender.com/health', timeout=10) as response:
-                        if response.status == 200:
-                            logger.info("✅ Keep-alive ping successful")
-                        else:
-                            logger.warning(f"⚠️ Keep-alive ping returned status: {response.status}")
-                except Exception as e:
-                    logger.error(f"❌ Keep-alive ping failed: {e}")
-                    
-        except Exception as e:
-            logger.error(f"❌ Keep-alive background task error: {e}")
 
 # FastAPI endpoints для render.com
 @app.get("/")
