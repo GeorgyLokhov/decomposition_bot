@@ -87,23 +87,19 @@ function cleanupUserFiles(chatId) {
 
 // === ТВОИ ФУНКЦИИ ОБРАБОТКИ ===
 
-// Умная очистка адресов
+// 1. Умная очистка адресов
 function smartCleanAddress(address) {
-  if (!address || address === null || address === undefined) {
+  if (address === null || address === undefined || typeof address !== 'string') {
     return address;
   }
 
   address = String(address).trim();
 
   const patternsToRemove = [
-    /,?\s*кв\.?\s*\d+/gi,
-    /,?\s*квартира\s*\d+/gi,
-    /,?\s*оф\.?\s*\d+/gi,
-    /,?\s*офис\s*\d+/gi,
-    /,?\s*эт\.?\s*\d+/gi,
-    /,?\s*этаж\s*\d+/gi,
-    /,?\s*пом\.?\s*\d+/gi,
-    /,?\s*помещение\s*\d+/gi,
+    /,?\s*кв\.?\s*\d+/gi, /,?\s*квартира\s*\d+/gi,
+    /,?\s*оф\.?\s*\d+/gi, /,?\s*офис\s*\d+/gi,
+    /,?\s*эт\.?\s*\d+/gi, /,?\s*этаж\s*\d+/gi,
+    /,?\s*пом\.?\s*\d+/gi, /,?\s*помещение\s*\d+/gi,
     /^\d{6},?\s*/gi,
   ];
 
@@ -113,7 +109,7 @@ function smartCleanAddress(address) {
 
   address = address.replace(/,+/g, ',');
   address = address.replace(/\s+/g, ' ');
-  address = address.trim().replace(/^,|,$/g, '');
+  address = address.trim().replace(/^,|,$/g, ''); // Убираем запятые в начале и конце
 
   const hasCity = /\b(Москва|московская область|москва|мо|м\.о\.)\b/i.test(address);
 
@@ -123,103 +119,94 @@ function smartCleanAddress(address) {
       /\bг\.?\s*(балашиха|одинцово|подольск)/i,
       /\b(московская обл|мо)\b/i
     ];
-
     const isMo = moIndicators.some(pattern => pattern.test(address));
-
-    if (isMo) {
-      address += ', Московская область, Россия';
-    } else {
-      address += ', Москва, Россия';
-    }
+    address += isMo ? ', Московская область, Россия' : ', Москва, Россия';
   }
-
   return address;
 }
 
-// Извлечение номерных знаков
+// 2. Извлечение номерных знаков
 function extractLicensePlate(text) {
   if (!text || typeof text !== 'string') {
     return "";
   }
+  text = String(text); // Убедимся, что это строка
 
   const patterns = [
-    /[А-Я]\d{3}[А-Я]{2}\d{2,3}/g,
-    /\d{4}[А-Я]{2}\d{2,3}/g,
-    /[А-Я]{1,2}\d{3,4}[А-Я]{1,2}\d{2,3}/g
+    /[А-Я]\d{3}[А-Я]{2}\d{2,3}/g,      // A123BC77, A123BC777
+    /\d{4}[А-Я]{2}\d{2,3}/g,          // 1234AB77 (для прицепов и т.д.)
+    /[А-Я]{1,2}\d{3,4}[А-Я]{1,2}\d{2,3}/g // Более общие случаи
   ];
 
-  const foundPlates = [];
+  let foundPlates = [];
   for (const pattern of patterns) {
     const matches = text.toUpperCase().match(pattern);
     if (matches) {
-      foundPlates.push(...matches);
+      foundPlates = foundPlates.concat(matches);
     }
   }
 
   if (foundPlates.length > 0) {
-    return foundPlates[0];
+    return foundPlates[0]; // Возвращаем первый найденный по основным шаблонам
   }
 
-  const textClean = text.replace(/\s/g, '').replace(/,/g, ' ').split(' ').pop();
+  // Эвристика из твоего кода для случаев, когда явных шаблонов нет
+  const textCleanArray = text.replace(/\s/g, '').replace(/,/g, ' ').split(' ');
+  const textClean = textCleanArray.length > 0 ? textCleanArray[textCleanArray.length - 1] : "";
+
 
   if (textClean && textClean.length >= 8) {
     const last3 = textClean.slice(-3);
+    if (last3.length === 3) {
+        const isDigit = (char) => /\d/.test(char);
+        const isLetter = (char) => /[А-ЯA-Z]/i.test(char);
 
-    if (last3.length === 3 &&
-        /\d/.test(last3[0]) &&
-        /\d/.test(last3[1]) &&
-        /[А-Я]/i.test(last3[2])) {
-      return textClean.length >= 8 ? textClean.slice(-8) : textClean;
-    } else if (last3.length === 3 &&
-               /\d/.test(last3[0]) &&
-               /\d/.test(last3[1]) &&
-               /\d/.test(last3[2])) {
-      return textClean.length >= 9 ? textClean.slice(-9) : textClean;
+        if (isDigit(last3[0]) && isDigit(last3[1]) && isLetter(last3[2])) {
+            return textClean.length >= 8 ? textClean.slice(-8) : textClean;
+        } else if (isDigit(last3[0]) && isDigit(last3[1]) && isDigit(last3[2])) {
+            return textClean.length >= 9 ? textClean.slice(-9) : textClean;
+        }
     }
   }
-
   return "";
 }
 
-// Обработка данных (твоя логика)
-function processData(data) {
+// ОСНОВНАЯ ФУНКЦИЯ ОБРАБОТКИ ДАННЫХ (включает твою логику)
+function processRawData(data) {
+  if (!data || data.length === 0) return [];
+
   // 1. Умная очистка адресов
-  const addressCols = Object.keys(data[0] || {}).filter(col => 
-    /адрес|address/i.test(col)
-  );
-
-  if (addressCols.length > 0) {
-    const addressCol = addressCols[0];
+  const addressColName = Object.keys(data[0]).find(col => /адрес|address/i.test(col));
+  if (addressColName) {
     data.forEach(row => {
-      if (row[addressCol]) {
-        row[addressCol] = smartCleanAddress(row[addressCol]);
-      }
+      row[addressColName] = smartCleanAddress(row[addressColName]);
     });
   }
 
-  // 2. Извлечение номерных знаков
-  const autoDataCol = Object.keys(data[0] || {}).find(col => 
-    col.toLowerCase().includes('данные авто') || 
-    col.toLowerCase().includes('auto')
-  );
-
-  if (autoDataCol) {
+  // 2. Извлечение номерных знаков В НОВЫЙ СТОЛБЕЦ и очистка старого
+  const autoDataColName = Object.keys(data[0]).find(col => /данные авто/i.test(col));
+  if (autoDataColName) {
     data.forEach(row => {
-      if (row[autoDataCol]) {
-        const plate = extractLicensePlate(row[autoDataCol]);
-        row['НОМЕРНОЙ ЗНАК'] = plate;
-        
-        if (plate) {
-          row[autoDataCol] = row[autoDataCol].replace(plate, '').trim();
-        }
+      const originalAutoData = String(row[autoDataColName] || "");
+      const plate = extractLicensePlate(originalAutoData);
+      
+      row['НОМЕРНОЙ ЗНАК'] = plate; // Новый столбец
+      
+      if (plate) {
+        // Удаляем номер из оригинальной строки. 
+        // Простой replace может быть не идеален, если номер встречается несколько раз.
+        // Для простоты, как в твоем Python коде, используем replace.
+        let cleanedAutoData = originalAutoData.replace(plate, '').trim();
+        // Убираем возможные оставшиеся запятые по краям
+        cleanedAutoData = cleanedAutoData.replace(/^,\s*|\s*,$/g, '').trim();
+        row[autoDataColName] = cleanedAutoData;
       }
     });
   }
-
   return data;
 }
 
-// Фильтрация по московским регионам
+// Фильтрация по московским регионам (применяется ПОСЛЕ processRawData)
 function filterMoscowRegions(data) {
   return data.filter(row => {
     const region = String(row['Регион'] || row['регион'] || row['РЕГИОН'] || '').toLowerCase();
@@ -231,68 +218,64 @@ function filterMoscowRegions(data) {
     return MOSCOW_REGIONS.some(moscowRegion => 
       fullLocation.includes(moscowRegion) || 
       region.includes(moscowRegion) ||
-      city.includes('москва') ||
-      address.includes('москва')
+      city.includes('москва') || // Дополнительная проверка для Москвы
+      address.includes('москва') // И в адресе
     );
   });
 }
 
-// Получение уникальных значений из столбца
+// Получение уникальных значений из столбца для фильтров
 function getUniqueValues(data, columnName) {
-  const possibleColumns = [columnName, columnName.toLowerCase(), columnName.toUpperCase()];
-  
-  for (const col of possibleColumns) {
-    if (data.length > 0 && data[0].hasOwnProperty(col)) {
-      return [...new Set(data.map(row => row[col]).filter(val => val !== undefined && val !== null && val !== ''))];
+  if (!data || data.length === 0) return [];
+  const possibleColumnNames = [columnName, columnName.toLowerCase(), columnName.toUpperCase()];
+  let actualColumnName = null;
+
+  for (const name of possibleColumnNames) {
+    if (data[0].hasOwnProperty(name)) {
+      actualColumnName = name;
+      break;
     }
   }
-  return [];
+  if (!actualColumnName) return [];
+  
+  return [...new Set(data.map(row => row[actualColumnName]).filter(val => val !== undefined && val !== null && String(val).trim() !== ''))];
 }
 
 // Создание inline клавиатуры для выбора
-function createSelectionKeyboard(options, selectedItems, backButton = true) {
+function createSelectionKeyboard(options, selectedItems, callbackPrefix, backButton = true) {
   const keyboard = [];
-  
-  // Добавляем опции по 2 в ряд
   for (let i = 0; i < options.length; i += 2) {
     const row = [];
-    
     const option1 = options[i];
     const isSelected1 = selectedItems.has(option1);
     row.push({
-      text: `${isSelected1 ? '✅' : '◻️'} ${option1}`,
-      callback_data: `toggle_${Buffer.from(option1).toString('base64')}`
+      text: `${isSelected1 ? '✅' : '◻️'} ${String(option1).slice(0, 25)}`, // Обрезка для длинных названий
+      callback_data: `${callbackPrefix}${Buffer.from(String(option1)).toString('base64')}`
     });
-    
     if (i + 1 < options.length) {
       const option2 = options[i + 1];
       const isSelected2 = selectedItems.has(option2);
       row.push({
-        text: `${isSelected2 ? '✅' : '◻️'} ${option2}`,
-        callback_data: `toggle_${Buffer.from(option2).toString('base64')}`
+        text: `${isSelected2 ? '✅' : '◻️'} ${String(option2).slice(0, 25)}`,
+        callback_data: `${callbackPrefix}${Buffer.from(String(option2)).toString('base64')}`
       });
     }
-    
     keyboard.push(row);
   }
-  
-  // Кнопки управления
   const controlRow = [];
-  if (selectedItems.size > 0) {
-    controlRow.push({ text: '✅ Применить', callback_data: 'apply_selection' });
+  if (selectedItems.size > 0 || callbackPrefix.includes('flag')) { // Для флагов авто можно применить и без выбора (означает "все")
+      controlRow.push({ text: '✅ Применить', callback_data: 'apply_selection' });
   }
   if (backButton) {
     controlRow.push({ text: '◀️ Назад', callback_data: 'back' });
   }
-  
   if (controlRow.length > 0) {
     keyboard.push(controlRow);
   }
-  
   return { inline_keyboard: keyboard };
 }
 
-// Обработка CSV файлов
+// Парсинг CSV
 async function parseCSV(filePath) {
   return new Promise((resolve, reject) => {
     const results = [];
@@ -304,7 +287,7 @@ async function parseCSV(filePath) {
   });
 }
 
-// Обработка Excel файлов
+// Парсинг Excel
 function parseExcel(filePath) {
   const workbook = xlsx.readFile(filePath);
   const sheetName = workbook.SheetNames[0];
@@ -314,20 +297,18 @@ function parseExcel(filePath) {
 
 // Создание CSV файла
 async function createCSVFile(data, filename) {
-  if (data.length === 0) return null;
-  
+  if (!data || data.length === 0) return null;
   const headers = Object.keys(data[0]).map(key => ({ id: key, title: key }));
-  const csvWriter = createCsvWriter({
+  const csvWriterInstance = createCsvWriter({
     path: filename,
     header: headers,
-    encoding: 'utf8'
+    encoding: 'utf8' // Явная UTF-8 кодировка
   });
-  
-  await csvWriter.writeRecords(data);
+  await csvWriterInstance.writeRecords(data);
   return filename;
 }
 
-// Разделение данных на части по 2000 строк
+// Разделение данных на части по N строк
 function splitDataIntoChunks(data, chunkSize = 2000) {
   const chunks = [];
   for (let i = 0; i < data.length; i += chunkSize) {
@@ -336,39 +317,20 @@ function splitDataIntoChunks(data, chunkSize = 2000) {
   return chunks;
 }
 
-// Разделение данных по типам адресов
-function splitDataByAddressTypes(data, selectedTypes) {
-  const result = {};
-  
-  selectedTypes.forEach(type => {
-    const filteredData = data.filter(row => {
-      const addressType = row['Тип адреса'] || row['тип адреса'] || row['ТИП АДРЕСА'] || '';
-      return addressType === type;
-    });
-    
-    if (filteredData.length > 0) {
-      result[type] = splitDataIntoChunks(filteredData);
-    }
-  });
-  
-  return result;
-}
-
 // Обработчик команды /start
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   initUserState(chatId);
-  
   try {
     await bot.sendMessage(chatId, 
       '🤖 Привет! Я бот для обработки файлов розыска авто.\n\n' +
       '📁 Отправьте мне CSV или Excel файл, и я:\n' +
       '• Умно очищу адреса\n' +
-      '• Извлеку номерные знаки\n' +
-      '• Оставлю только Москву и Подмосковье\n' +
-      '• Предложу фильтры по типам адресов\n' +
-      '• Разделю на части по 2000 строк\n\n' +
-      '📋 Просто отправьте файл!'
+      '• Извлеку номерные знаки в отдельный столбец "НОМЕРНОЙ ЗНАК"\n' +
+      '• Оставлю только Москву, Подмосковье и близлежащие города\n' +
+      '• Предложу фильтры по типам адресов и флагам нового авто (если есть)\n' +
+      '• Разделю итоговые файлы на части по 2000 строк\n\n' +
+      'Просто отправьте файл!'
     );
   } catch (error) {
     console.error('Error sending start message:', error);
@@ -383,7 +345,6 @@ bot.on('document', async (msg) => {
   try {
     await bot.sendMessage(chatId, '⏳ Загружаю и обрабатываю файл...');
     
-    // Скачиваем файл
     const fileId = msg.document.file_id;
     const fileInfo = await bot.getFile(fileId);
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fileInfo.file_path}`;
@@ -394,58 +355,54 @@ bot.on('document', async (msg) => {
     const tempPath = path.join('uploads', `${chatId}_${Date.now()}_${msg.document.file_name}`);
     fs.writeFileSync(tempPath, Buffer.from(buffer));
     
-    // Парсим файл
-    let data;
+    let rawData;
     const fileName = msg.document.file_name.toLowerCase();
     
     if (fileName.endsWith('.csv')) {
-      data = await parseCSV(tempPath);
+      rawData = await parseCSV(tempPath);
     } else if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
-      data = parseExcel(tempPath);
+      rawData = parseExcel(tempPath);
     } else {
-      await bot.sendMessage(chatId, '❌ Поддерживаются только CSV и Excel файлы');
+      await bot.sendMessage(chatId, '❌ Поддерживаются только CSV и Excel файлы (.csv, .xlsx, .xls)');
       fs.unlinkSync(tempPath);
       return;
     }
 
-    if (!data || data.length === 0) {
-      await bot.sendMessage(chatId, '❌ Файл пустой или поврежден');
+    if (!rawData || rawData.length === 0) {
+      await bot.sendMessage(chatId, '❌ Файл пустой или не удалось прочитать данные.');
       fs.unlinkSync(tempPath);
       return;
     }
 
-    // ТВОЯ ОБРАБОТКА: умная очистка + извлечение номеров
     await bot.sendMessage(chatId, '🔧 Применяю умную очистку адресов и извлекаю номерные знаки...');
-    data = processData(data);
+    let processedData = processRawData(rawData); // Твоя обработка
     
-    // Фильтруем по московским регионам
-    await bot.sendMessage(chatId, '🗺️ Фильтрую по Москве и Подмосковью...');
-    const moscowData = filterMoscowRegions(data);
+    await bot.sendMessage(chatId, '🗺️ Фильтрую по Москве, Подмосковью и близлежащим городам...');
+    let moscowData = filterMoscowRegions(processedData); // Фильтрация по регионам
     
     if (moscowData.length === 0) {
-      await bot.sendMessage(chatId, '❌ В файле не найдено данных по Москве и Подмосковью');
+      await bot.sendMessage(chatId, '❌ После обработки и фильтрации по регионам данных не осталось.');
       fs.unlinkSync(tempPath);
       return;
     }
     
-    // Сохраняем данные в состояние пользователя
-    userState.originalData = moscowData;
+    userState.originalData = moscowData; // Сохраняем данные ПОСЛЕ ВСЕХ начальных обработок
     userState.addressTypes = getUniqueValues(moscowData, 'Тип адреса');
     userState.newCarFlags = getUniqueValues(moscowData, 'Флаг нового авто');
     
     await bot.sendMessage(chatId, 
-      `✅ Файл обработан!\n\n` +
-      `📊 Исходных записей: ${data.length}\n` +
-      `🗺️ По Москве/Подмосковью: ${moscowData.length}\n` +
-      `📋 Типов адресов: ${userState.addressTypes.length}\n` +
-      `🚗 Флагов авто: ${userState.newCarFlags.length}`,
+      `✅ Первичная обработка завершена!\n\n` +
+      `📊 Исходных записей в файле: ${rawData.length}\n` +
+      `🔧 Записей после умной очистки: ${processedData.length}\n` +
+      `🗺️ Записей по Москве/МО: ${moscowData.length}\n` +
+      (userState.addressTypes.length > 0 ? `📋 Уникальных типов адресов: ${userState.addressTypes.length}\n` : '') +
+      (userState.newCarFlags.length > 0 ? `🚗 Уникальных флагов авто: ${userState.newCarFlags.length}\n` : '') +
+      `\nТеперь выберите, как выгрузить файлы:`,
       {
         reply_markup: {
           inline_keyboard: [
-            [
-              { text: '🔄 Без фильтров', callback_data: 'no_filters' },
-              { text: '🎯 С фильтрами', callback_data: 'with_filters' }
-            ]
+            [{ text: '➡️ Без доп. фильтров', callback_data: 'no_filters' }],
+            [{ text: '⚙️ Применить фильтры', callback_data: 'with_filters' }]
           ]
         }
       }
@@ -456,7 +413,7 @@ bot.on('document', async (msg) => {
     
   } catch (error) {
     console.error('Error processing file:', error);
-    await bot.sendMessage(chatId, '❌ Ошибка при обработке файла. Попробуйте еще раз.');
+    await bot.sendMessage(chatId, '❌ Ошибка при обработке файла. Попробуйте еще раз или проверьте формат файла.');
   }
 });
 
@@ -466,213 +423,186 @@ bot.on('callback_query', async (query) => {
   const data = query.data;
   const userState = userStates.get(chatId);
   
-  if (!userState) {
-    await bot.answerCallbackQuery(query.id, { text: 'Сессия истекла. Начните заново с /start' });
+  if (!userState || !userState.originalData) { // Проверка, что есть что обрабатывать
+    await bot.answerCallbackQuery(query.id, { text: 'Сессия истекла или нет данных. Отправьте файл заново (/start).' });
+    if(query.message) await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
     return;
   }
   
   try {
+    await bot.answerCallbackQuery(query.id); // Сразу отвечаем, чтобы кнопка не "висела"
+
     if (data === 'no_filters') {
+      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       await handleNoFilters(chatId, userState);
-      
     } else if (data === 'with_filters') {
+      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       await handleWithFilters(chatId, userState);
-      
     } else if (data === 'back') {
+      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       await handleBack(chatId, userState);
-      
-    } else if (data.startsWith('toggle_')) {
-      const option = Buffer.from(data.replace('toggle_', ''), 'base64').toString();
-      await handleToggle(chatId, userState, option, query);
-      
+    } else if (data.startsWith('toggle_address_')) {
+      const option = Buffer.from(data.replace('toggle_address_', ''), 'base64').toString();
+      await handleToggleAddress(chatId, userState, option, query);
+    } else if (data.startsWith('toggle_flag_')) {
+      const option = Buffer.from(data.replace('toggle_flag_', ''), 'base64').toString();
+      await handleToggleFlag(chatId, userState, option, query);
     } else if (data === 'apply_selection') {
+      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       await handleApplySelection(chatId, userState);
-      
     } else if (data === 'reselect_filters') {
+      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       userState.selectedAddressTypes.clear();
       userState.selectedNewCarFlags.clear();
       await handleWithFilters(chatId, userState);
-      
     } else if (data === 'restart') {
+      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       cleanupUserFiles(chatId);
       userStates.delete(chatId);
       initUserState(chatId);
-      await bot.sendMessage(chatId, '🆕 Отправьте новый файл для обработки');
+      await bot.sendMessage(chatId, '🆕 Отправьте новый файл для обработки.');
     }
-    
-    await bot.answerCallbackQuery(query.id);
     
   } catch (error) {
     console.error('Error handling callback:', error);
-    await bot.answerCallbackQuery(query.id, { text: 'Произошла ошибка' });
+    // await bot.answerCallbackQuery(query.id, { text: 'Произошла ошибка при обработке выбора.' });
   }
 });
 
-// Обработка без фильтров
+// Выгрузка без доп. фильтров
 async function handleNoFilters(chatId, userState) {
   try {
-    await bot.sendMessage(chatId, '📦 Создаю файлы без дополнительных фильтров...');
+    await bot.sendMessage(chatId, '📦 Готовлю файлы без дополнительных фильтров (только умная очистка, номера и регионы)...');
     
-    const chunks = splitDataIntoChunks(userState.originalData);
+    const chunks = splitDataIntoChunks(userState.originalData); // Делим уже обработанные данные
     const createdFiles = [];
     
     for (let i = 0; i < chunks.length; i++) {
-      const filename = `uploads/${i + 1}_часть_розыска_авто_${chatId}_${Date.now()}.csv`;
+      const filename = `uploads/NO_FILTER_part_${i + 1}_${chatId}_${Date.now()}.csv`;
       await createCSVFile(chunks[i], filename);
-      createdFiles.push(filename);
+      createdFiles.push({filename, count: chunks[i].length, part: i + 1});
     }
     
-    // Отправляем файлы
-    for (let i = 0; i < createdFiles.length; i++) {
-      await bot.sendDocument(chatId, createdFiles[i], {
-        caption: `📁 ${i + 1} часть розыска авто\n📊 Записей: ${chunks[i].length}`
+    for (const file of createdFiles) {
+      await bot.sendDocument(chatId, file.filename, {
+        caption: `📁 Часть ${file.part} (без доп. фильтров)\n📊 Записей: ${file.count}`
       });
     }
     
-    if (!userFiles.has(chatId)) {
-      userFiles.set(chatId, []);
-    }
-    userFiles.get(chatId).push(...createdFiles);
+    if (!userFiles.has(chatId)) userFiles.set(chatId, []);
+    userFiles.get(chatId).push(...createdFiles.map(f => f.filename));
     
     await bot.sendMessage(chatId, 
-      `✅ Готово! Отправлено файлов: ${createdFiles.length}\n\n` +
-      `💡 Файлы готовы для загрузки в Google My Maps`,
+      `✅ Готово! Отправлено файлов: ${createdFiles.length}\n\n💡 Файлы готовы для загрузки в Google My Maps.`,
       {
         reply_markup: {
           inline_keyboard: [
-            [
-              { text: '🎯 Попробовать с фильтрами', callback_data: 'with_filters' },
-              { text: '🆕 Новый файл', callback_data: 'restart' }
-            ]
+            [{ text: '⚙️ Попробовать с фильтрами', callback_data: 'with_filters' }],
+            [{ text: '🆕 Загрузить новый файл', callback_data: 'restart' }]
           ]
         }
       }
     );
-    
   } catch (error) {
-    console.error('Error creating files without filters:', error);
-    await bot.sendMessage(chatId, '❌ Ошибка при создании файлов');
+    console.error('Error creating files (no_filters):', error);
+    await bot.sendMessage(chatId, '❌ Ошибка при создании файлов.');
   }
 }
 
-// Обработка с фильтрами
+// Начало выбора фильтров
 async function handleWithFilters(chatId, userState) {
-  if (userState.addressTypes.length === 0) {
-    await bot.sendMessage(chatId, '❌ В данных не найдено типов адресов для фильтрации');
-    return;
+  userState.state = STATES.SELECT_ADDRESS_TYPE; // Начинаем с выбора типа адреса
+  if (userState.addressTypes.length > 0) {
+    const keyboard = createSelectionKeyboard(userState.addressTypes, userState.selectedAddressTypes, 'toggle_address_', true);
+    await bot.sendMessage(chatId, 
+      '🏠 Шаг 1: Выберите типы адресов (можно несколько):\n\n📌 Нажимайте на кнопки, чтобы выбрать/снять галочку. Затем "Применить".',
+      { reply_markup: keyboard }
+    );
+  } else {
+    // Если типов адресов нет, переходим к флагам авто или сразу к выгрузке
+    await bot.sendMessage(chatId, 'ℹ️ Уникальных типов адресов для фильтрации не найдено.');
+    await proceedToNewCarFlags(chatId, userState);
   }
-  
-  userState.state = STATES.SELECT_ADDRESS_TYPE;
-  
-  const keyboard = createSelectionKeyboard(
-    userState.addressTypes, 
-    userState.selectedAddressTypes,
-    true
-  );
-  
-  await bot.sendMessage(chatId, 
-    '🏠 Выберите типы адресов:\n\n' +
-    `Доступно вариантов: ${userState.addressTypes.length}\n` +
-    '📌 Нажимайте на кнопки чтобы выбрать/снять галочку',
-    { reply_markup: keyboard }
-  );
 }
+
+async function proceedToNewCarFlags(chatId, userState) {
+  userState.state = STATES.SELECT_NEW_CAR_FLAG;
+  if (userState.newCarFlags.length > 0) {
+    const keyboard = createSelectionKeyboard(userState.newCarFlags, userState.selectedNewCarFlags, 'toggle_flag_', true);
+    await bot.sendMessage(chatId, 
+      '🚗 Шаг 2: Выберите флаги нового авто (можно несколько):\n\n📌 Если не хотите фильтровать по этому критерию, просто нажмите "Применить".',
+      { reply_markup: keyboard }
+    );
+  } else {
+    await bot.sendMessage(chatId, 'ℹ️ Уникальных флагов нового авто для фильтрации не найдено.');
+    await applyFiltersAndCreateFiles(chatId, userState); // Сразу создаем файлы, если и флагов нет
+  }
+}
+
 
 // Обработка кнопки "Назад"
 async function handleBack(chatId, userState) {
-  if (userState.state === STATES.SELECT_ADDRESS_TYPE) {
+  if (userState.state === STATES.SELECT_ADDRESS_TYPE || userState.state === STATES.FILTERS_APPLIED) {
     userState.state = STATES.CHOOSE_FILTERS;
+    userState.selectedAddressTypes.clear(); // Сбрасываем выбор
+    userState.selectedNewCarFlags.clear();  // Сбрасываем выбор
     await bot.sendMessage(chatId, 
-      'Выберите вариант обработки:',
+      'Выберите, как выгрузить файлы:',
       {
         reply_markup: {
           inline_keyboard: [
-            [
-              { text: '🔄 Без фильтров', callback_data: 'no_filters' },
-              { text: '🎯 С фильтрами', callback_data: 'with_filters' }
-            ]
+            [{ text: '➡️ Без доп. фильтров', callback_data: 'no_filters' }],
+            [{ text: '⚙️ Применить фильтры', callback_data: 'with_filters' }]
           ]
         }
       }
     );
   } else if (userState.state === STATES.SELECT_NEW_CAR_FLAG) {
+    // Возврат от выбора флагов к выбору типов адресов (если они были)
     await handleWithFilters(chatId, userState);
   }
 }
 
-// Обработка переключения опций
-async function handleToggle(chatId, userState, option, query) {
-  if (userState.state === STATES.SELECT_ADDRESS_TYPE) {
-    if (userState.selectedAddressTypes.has(option)) {
-      userState.selectedAddressTypes.delete(option);
-    } else {
-      userState.selectedAddressTypes.add(option);
-    }
-    
-    const keyboard = createSelectionKeyboard(
-      userState.addressTypes, 
-      userState.selectedAddressTypes,
-      true
-    );
-    
-    try {
-      await bot.editMessageReplyMarkup(keyboard, {
-        chat_id: chatId,
-        message_id: query.message.message_id
-      });
-    } catch (error) {
-      console.error('Error editing message:', error);
-    }
-    
-  } else if (userState.state === STATES.SELECT_NEW_CAR_FLAG) {
-    if (userState.selectedNewCarFlags.has(option)) {
-      userState.selectedNewCarFlags.delete(option);
-    } else {
-      userState.selectedNewCarFlags.add(option);
-    }
-    
-    const keyboard = createSelectionKeyboard(
-      userState.newCarFlags, 
-      userState.selectedNewCarFlags,
-      true
-    );
-    
-    try {
-      await bot.editMessageReplyMarkup(keyboard, {
-        chat_id: chatId,
-        message_id: query.message.message_id
-      });
-    } catch (error) {
-      console.error('Error editing message:', error);
-    }
+// Переключение опций для типов адресов
+async function handleToggleAddress(chatId, userState, option, query) {
+  if (userState.selectedAddressTypes.has(option)) {
+    userState.selectedAddressTypes.delete(option);
+  } else {
+    userState.selectedAddressTypes.add(option);
   }
+  const keyboard = createSelectionKeyboard(userState.addressTypes, userState.selectedAddressTypes, 'toggle_address_', true);
+  try {
+    await bot.editMessageReplyMarkup(keyboard, { chat_id: chatId, message_id: query.message.message_id });
+  } catch (error) { if (error.response && error.response.statusCode !== 400) console.error('Error editing message (address):', error); }
 }
 
-// Применение выбора
+// Переключение опций для флагов авто
+async function handleToggleFlag(chatId, userState, option, query) {
+  if (userState.selectedNewCarFlags.has(option)) {
+    userState.selectedNewCarFlags.delete(option);
+  } else {
+    userState.selectedNewCarFlags.add(option);
+  }
+  const keyboard = createSelectionKeyboard(userState.newCarFlags, userState.selectedNewCarFlags, 'toggle_flag_', true);
+  try {
+    await bot.editMessageReplyMarkup(keyboard, { chat_id: chatId, message_id: query.message.message_id });
+  } catch (error) { if (error.response && error.response.statusCode !== 400) console.error('Error editing message (flag):', error); }
+}
+
+// Применение выбора (после выбора типов адресов или флагов)
 async function handleApplySelection(chatId, userState) {
-  if (userState.state === STATES.SELECT_ADDRESS_TYPE && userState.selectedAddressTypes.size > 0) {
-    
-    if (userState.newCarFlags.length > 0) {
-      userState.state = STATES.SELECT_NEW_CAR_FLAG;
-      
-      const keyboard = createSelectionKeyboard(
-        userState.newCarFlags, 
-        userState.selectedNewCarFlags,
-        true
-      );
-      
-      await bot.sendMessage(chatId, 
-        '🚗 Выберите флаги нового авто:\n\n' +
-        `Доступно вариантов: ${userState.newCarFlags.length}\n` +
-        '📌 Можете пропустить этот шаг нажав "Применить" без выбора',
-        { reply_markup: keyboard }
-      );
-    } else {
-      // Если нет флагов авто, сразу создаем файлы
-      await applyFiltersAndCreateFiles(chatId, userState);
+  if (userState.state === STATES.SELECT_ADDRESS_TYPE) {
+    // Переходим к выбору флагов авто
+    if (userState.addressTypes.length > 0 && userState.selectedAddressTypes.size === 0) {
+        await bot.sendMessage(chatId, "⚠️ Вы не выбрали ни одного типа адреса. Если хотите пропустить этот шаг, используйте кнопку 'Применить' на следующем шаге или выберите хотя бы один тип.");
+        // Можно либо остаться на этом шаге, либо принудительно перейти дальше, считая, что пользователь хочет "все типы"
+        // Для строгости, оставим пользователя выбирать или предложим "выбрать все" кнопку.
+        // Сейчас - просто информируем. Если нажмет "Применить" снова, то будет считаться как "все" (логика в applyFiltersAndCreateFiles)
     }
-    
+    await proceedToNewCarFlags(chatId, userState);
+
   } else if (userState.state === STATES.SELECT_NEW_CAR_FLAG) {
+    // Все выборы сделаны, применяем фильтры и создаем файлы
     await applyFiltersAndCreateFiles(chatId, userState);
   }
 }
@@ -680,101 +610,99 @@ async function handleApplySelection(chatId, userState) {
 // Применение фильтров и создание файлов
 async function applyFiltersAndCreateFiles(chatId, userState) {
   try {
-    await bot.sendMessage(chatId, '⏳ Применяю фильтры и создаю файлы...');
+    await bot.sendMessage(chatId, '⏳ Применяю выбранные фильтры и готовлю файлы...');
     
-    let filteredData = [...userState.originalData];
+    let dataToFilter = [...userState.originalData]; // Берем уже очищенные и отфильтрованные по региону данные
     
     // Фильтр по типам адресов
     if (userState.selectedAddressTypes.size > 0) {
-      filteredData = filteredData.filter(row => {
-        const addressType = row['Тип адреса'] || row['тип адреса'] || row['ТИП АДРЕСА'] || '';
+      dataToFilter = dataToFilter.filter(row => {
+        const addressType = String(row['Тип адреса'] || row['тип адреса'] || row['ТИП АДРЕСА'] || '');
         return userState.selectedAddressTypes.has(addressType);
       });
     }
-    
+    // Если userState.selectedAddressTypes.size === 0, значит пользователь не выбрал ни одного, фильтрация по этому критерию не применяется.
+
     // Фильтр по флагам авто
     if (userState.selectedNewCarFlags.size > 0) {
-      filteredData = filteredData.filter(row => {
-        const carFlag = row['Флаг нового авто'] || row['флаг нового авто'] || row['ФЛАГ НОВОГО АВТО'] || '';
+      dataToFilter = dataToFilter.filter(row => {
+        const carFlag = String(row['Флаг нового авто'] || row['флаг нового авто'] || row['ФЛАГ НОВОГО АВТО'] || '');
         return userState.selectedNewCarFlags.has(carFlag);
       });
     }
-    
-    if (filteredData.length === 0) {
-      await bot.sendMessage(chatId, '❌ По выбранным фильтрам данных не найдено');
+    // Аналогично, если userState.selectedNewCarFlags.size === 0, фильтрация по этому критерию не применяется.
+
+    if (dataToFilter.length === 0) {
+      await bot.sendMessage(chatId, '❌ По выбранным фильтрам данных не найдено.');
+      // Предложить перевыбрать фильтры или начать заново
+      await bot.sendMessage(chatId, "Попробуйте изменить выбор:", {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔄 Перевыбрать фильтры', callback_data: 'reselect_filters' }],
+            [{ text: '🆕 Загрузить новый файл', callback_data: 'restart' }]
+          ]
+        }
+      });
       return;
     }
     
-    // Разделяем по типам адресов и создаем части по 2000 записей
-    const splitData = splitDataByAddressTypes(filteredData, userState.selectedAddressTypes);
+    const chunks = splitDataIntoChunks(dataToFilter);
     const createdFiles = [];
-    
-    for (const [addressType, chunks] of Object.entries(splitData)) {
-      for (let i = 0; i < chunks.length; i++) {
-        const safeName = addressType.replace(/[^a-zA-Zа-яА-Я0-9]/g, '_');
-        const filename = `uploads/${safeName}_часть_${i + 1}_${chatId}_${Date.now()}.csv`;
-        await createCSVFile(chunks[i], filename);
-        createdFiles.push({ 
-          filename, 
-          addressType, 
-          part: i + 1,
-          totalParts: chunks.length,
-          count: chunks[i].length 
-        });
-      }
+
+    for (let i = 0; i < chunks.length; i++) {
+      const filename = `uploads/FILTERED_part_${i + 1}_${chatId}_${Date.now()}.csv`;
+      await createCSVFile(chunks[i], filename);
+      createdFiles.push({filename, count: chunks[i].length, part: i + 1});
     }
     
-    // Отправляем файлы
     for (const file of createdFiles) {
-      const caption = file.totalParts > 1 
-        ? `📁 ${file.addressType} (${file.part}/${file.totalParts})\n📊 Записей: ${file.count}`
-        : `📁 ${file.addressType}\n📊 Записей: ${file.count}`;
-        
-      await bot.sendDocument(chatId, file.filename, { caption });
+      await bot.sendDocument(chatId, file.filename, {
+        caption: `📁 Часть ${file.part} (с фильтрами)\n📊 Записей: ${file.count}`
+      });
     }
     
-    if (!userFiles.has(chatId)) {
-      userFiles.set(chatId, []);
-    }
+    if (!userFiles.has(chatId)) userFiles.set(chatId, []);
     userFiles.get(chatId).push(...createdFiles.map(f => f.filename));
     
+    let filterSummary = `Фильтры применены:\n`;
+    if (userState.selectedAddressTypes.size > 0) {
+      filterSummary += `🏠 Типы адресов: ${Array.from(userState.selectedAddressTypes).join(', ')}\n`;
+    } else {
+      filterSummary += `🏠 Типы адресов: Все\n`;
+    }
+    if (userState.selectedNewCarFlags.size > 0) {
+      filterSummary += `🚗 Флаги авто: ${Array.from(userState.selectedNewCarFlags).join(', ')}\n`;
+    } else {
+      filterSummary += `🚗 Флаги авто: Все\n`;
+    }
+
     await bot.sendMessage(chatId, 
-      `✅ Готово! Создано файлов: ${createdFiles.length}\n\n` +
-      `📋 Выбранные фильтры:\n` +
-      `🏠 Типы адресов: ${Array.from(userState.selectedAddressTypes).join(', ')}\n` +
-      `🚗 Флаги авто: ${userState.selectedNewCarFlags.size > 0 ? Array.from(userState.selectedNewCarFlags).join(', ') : 'Все'}\n\n` +
-      `💡 Файлы готовы для загрузки в Google My Maps`,
+      `✅ Готово! Отправлено файлов: ${createdFiles.length}\n\n${filterSummary}\n💡 Файлы готовы для загрузки в Google My Maps.`,
       {
         reply_markup: {
           inline_keyboard: [
-            [
-              { text: '🔄 Перевыбрать фильтры', callback_data: 'reselect_filters' },
-              { text: '🆕 Новый файл', callback_data: 'restart' }
-            ]
+            [{ text: '🔄 Перевыбрать фильтры', callback_data: 'reselect_filters' }],
+            [{ text: '🆕 Загрузить новый файл', callback_data: 'restart' }]
           ]
         }
       }
     );
-    
     userState.state = STATES.FILTERS_APPLIED;
-    
   } catch (error) {
     console.error('Error creating filtered files:', error);
-    await bot.sendMessage(chatId, '❌ Ошибка при создании файлов с фильтрами');
+    await bot.sendMessage(chatId, '❌ Ошибка при создании файлов с фильтрами.');
   }
 }
 
 // ====== EXPRESS ENDPOINTS ======
+app.get('/', (req, res) => res.send('Bot is running!'));
 
-// Health check
-app.get('/', (req, res) => {
-  res.send('Bot is running!');
-});
-
-// Endpoint для установки webhook
 app.get('/registerWebhook', async (req, res) => {
   try {
-    const webhookUrl = `https://${req.get('host')}/webhook`;
+    const host = req.get('host');
+    // Для Render.com важно использовать X-Forwarded-Proto, если он есть, или предполагать https
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const webhookUrl = `${protocol}://${host}/webhook`;
     
     const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
       method: 'POST',
@@ -782,67 +710,58 @@ app.get('/registerWebhook', async (req, res) => {
       body: JSON.stringify({ url: webhookUrl })
     });
     const result = await response.json();
-    
-    res.json({
-      success: result.ok,
-      webhook_url: webhookUrl,
-      telegram_response: result,
-      message: result.ok ? 'Webhook успешно установлен!' : 'Ошибка установки webhook'
-    });
+    res.json({ success: result.ok, webhook_url: webhookUrl, telegram_response: result, message: result.ok ? 'Webhook успешно установлен!' : `Ошибка: ${result.description}` });
   } catch (error) {
-    console.error('Error setting webhook:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    console.error('Error setting webhook via /registerWebhook:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Webhook endpoint
 app.post('/webhook', async (req, res) => {
   try {
-    await bot.processUpdate(req.body);
+    bot.processUpdate(req.body);
     res.sendStatus(200);
   } catch (error) {
     console.error('Webhook error:', error);
-    res.sendStatus(500);
+    res.sendStatus(500); // Отвечаем ошибкой, но не останавливаем сервер
   }
 });
 
-// Установка webhook при запуске
-async function setWebhook() {
+async function setupWebhook() {
   try {
     if (WEBHOOK_URL) {
-      const webhookUrl = WEBHOOK_URL.startsWith('https://') 
-        ? `${WEBHOOK_URL}/webhook` 
-        : `https://${WEBHOOK_URL.replace('http://', '')}/webhook`;
+      // Убеждаемся что используем HTTPS и правильный путь
+      let fullWebhookUrl = WEBHOOK_URL;
+      if (!fullWebhookUrl.startsWith('https://')) {
+          fullWebhookUrl = `https://${fullWebhookUrl.replace(/^http:\/\//i, '')}`;
+      }
+      if (!fullWebhookUrl.endsWith('/webhook')) {
+          fullWebhookUrl = `${fullWebhookUrl.replace(/\/$/, '')}/webhook`;
+      }
         
-      await bot.setWebHook(webhookUrl);
-      console.log('Webhook set successfully to:', webhookUrl);
+      await bot.setWebHook(fullWebhookUrl);
+      console.log('Webhook set successfully to:', fullWebhookUrl);
     } else {
-      console.log('WEBHOOK_URL not set, using polling');
-      bot.startPolling();
+      console.log('WEBHOOK_URL environment variable not set. Starting in polling mode.');
+      bot.startPolling({ polling: { autoStart: true, interval: 300 } }).catch(err => {
+          console.error("Polling error:", err);
+      });
     }
   } catch (error) {
-    console.error('Error setting webhook:', error);
+    console.error('Error setting webhook during startup:', error);
+    // Если установка вебхука не удалась, можно перейти в режим polling
+    console.log('Failed to set webhook, attempting to start in polling mode.');
+    bot.startPolling({ polling: { autoStart: true, interval: 300 } }).catch(err => {
+        console.error("Polling error after webhook failure:", err);
+    });
   }
 }
 
-// Очистка файлов при завершении
-process.on('SIGTERM', () => {
-  userFiles.forEach((files, chatId) => {
-    cleanupUserFiles(chatId);
-  });
-});
-
-process.on('SIGINT', () => {
-  userFiles.forEach((files, chatId) => {
-    cleanupUserFiles(chatId);
-  });
-  process.exit(0);
-});
+// Очистка при завершении
+process.on('SIGTERM', () => { userFiles.forEach((_files, chatId) => cleanupUserFiles(chatId)); process.exit(0); });
+process.on('SIGINT', () => { userFiles.forEach((_files, chatId) => cleanupUserFiles(chatId)); process.exit(0); });
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  setWebhook();
+  setupWebhook(); // Вызываем настройку вебхука при старте
 });
