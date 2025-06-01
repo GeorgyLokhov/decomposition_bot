@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Set
 import time
 import aiohttp
 import hashlib
+import uvicorn
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters.command import Command
@@ -51,30 +52,11 @@ user_data: Dict[int, Dict] = {}
 # Глобальное хранилище для callback_data маппинга
 callback_mappings: Dict[str, str] = {}
 
-# === KEEP-ALIVE МЕХАНИЗМ ===
-async def keep_alive():
-    """Поддержание активности сервера каждые 14 минут"""
-    while True:
-        try:
-            await asyncio.sleep(14 * 60)  # 14 минут
-            
-            # Самопинг сервера
-            async with aiohttp.ClientSession() as session:
-                try:
-                    async with session.get('https://rozysk-avto-bot.onrender.com/health') as response:
-                        if response.status == 200:
-                            logger.info("✅ Keep-alive ping successful")
-                        else:
-                            logger.warning(f"⚠️ Keep-alive ping returned status: {response.status}")
-                except Exception as e:
-                    logger.error(f"❌ Keep-alive ping failed: {e}")
-                    
-        except Exception as e:
-            logger.error(f"❌ Keep-alive error: {e}")
+# Флаг для контроля работы приложения
+is_running = True
 
 def generate_callback_id(text: str) -> str:
     """Генерирует короткий ID для callback_data из текста"""
-    # Создаем хеш из текста и берем первые 8 символов
     hash_object = hashlib.md5(text.encode())
     return hash_object.hexdigest()[:8]
 
@@ -849,6 +831,27 @@ async def other_messages(message: types.Message, state: FSMContext):
             "❓ Не понимаю команду. Нажмите /start для начала работы."
         )
 
+# === KEEP-ALIVE BACKGROUND TASK ===
+async def keep_alive_background():
+    """Фоновая задача для поддержания активности"""
+    while is_running:
+        try:
+            await asyncio.sleep(14 * 60)  # 14 минут
+            
+            # Самопинг сервера
+            async with aiohttp.ClientSession() as session:
+                try:
+                    async with session.get('https://rozysk-avto-bot.onrender.com/health', timeout=10) as response:
+                        if response.status == 200:
+                            logger.info("✅ Keep-alive ping successful")
+                        else:
+                            logger.warning(f"⚠️ Keep-alive ping returned status: {response.status}")
+                except Exception as e:
+                    logger.error(f"❌ Keep-alive ping failed: {e}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Keep-alive background task error: {e}")
+
 # FastAPI endpoints для render.com
 @app.get("/")
 async def root():
@@ -886,80 +889,48 @@ async def webhook(request: Request):
         logger.error(f"Webhook error: {e}")
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
-async def set_webhook():
-    """Установка webhook"""
-    try:
-        webhook_url = "https://rozysk-avto-bot.onrender.com/webhook"
-        await bot.set_webhook(webhook_url)
-        logger.info(f"✅ Webhook установлен: {webhook_url}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка установки webhook: {e}")
-
-# Обработка graceful shutdown
-import signal
-
-class GracefulKiller:
-    def __init__(self):
-        self.kill_now = False
-        signal.signal(signal.SIGINT, self._handle_signal)
-        signal.signal(signal.SIGTERM, self._handle_signal)
-
-    def _handle_signal(self, signum, frame):
-        logger.info(f"🛑 Получен сигнал завершения: {signum}")
-        self.kill_now = True
-
-async def main():
-    """Основная функция запуска"""
-    killer = GracefulKiller()
+@app.on_event("startup")
+async def startup_event():
+    """Запуск приложения"""
+    global is_running
+    is_running = True
     
     try:
         # Устанавливаем webhook
-        await set_webhook()
+        webhook_url = "https://rozysk-avto-bot.onrender.com/webhook"
+        await bot.set_webhook(webhook_url)
+        logger.info(f"✅ Webhook установлен: {webhook_url}")
         
-        # Запускаем keep-alive задачу
-        keep_alive_task = asyncio.create_task(keep_alive())
-        logger.info("🔄 Keep-alive задача запущена")
-        
-        # Запускаем приложение
-        import uvicorn
-        config = uvicorn.Config(
-            app=app,
-            host="0.0.0.0",
-            port=int(os.environ.get("PORT", 10000)),
-            log_level="info",
-            access_log=True
-        )
-        server = uvicorn.Server(config)
-        
-        # Запускаем сервер
-        logger.info(f"🚀 Запускаем сервер на порту {config.port}")
-        server_task = asyncio.create_task(server.serve())
-        
-        # Ждем завершения
-        try:
-            await server_task
-        except asyncio.CancelledError:
-            logger.info("🛑 Сервер остановлен")
+        # Запускаем фоновую задачу keep-alive
+        asyncio.create_task(keep_alive_background())
+        logger.info("🔄 Keep-alive фоновая задача запущена")
         
     except Exception as e:
-        logger.error(f"❌ Ошибка запуска: {e}")
-    finally:
-        try:
-            logger.info("🧹 Очистка ресурсов...")
-            await bot.delete_webhook()
-            await bot.session.close()
-            
-            # Останавливаем keep-alive задачу
-            if 'keep_alive_task' in locals():
-                keep_alive_task.cancel()
-                try:
-                    await keep_alive_task
-                except asyncio.CancelledError:
-                    pass
-                    
-        except Exception as e:
-            logger.error(f"Ошибка при очистке: {e}")
+        logger.error(f"❌ Ошибка при startup: {e}")
 
-# Запуск приложения
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Завершение приложения"""
+    global is_running
+    is_running = False
+    
+    try:
+        logger.info("🧹 Очистка ресурсов при завершении...")
+        await bot.delete_webhook()
+        await bot.session.close()
+    except Exception as e:
+        logger.error(f"❌ Ошибка при shutdown: {e}")
+
+# === ТОЧКА ВХОДА ===
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Для локального запуска
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"🚀 Запускаем сервер на порту {port}")
+    
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        access_log=True
+    )
