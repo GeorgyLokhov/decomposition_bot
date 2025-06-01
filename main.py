@@ -7,6 +7,7 @@ import aiofiles
 from io import BytesIO
 from typing import Dict, List, Optional, Set
 import time
+import aiohttp
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters.command import Command
@@ -45,6 +46,27 @@ class ProcessStates(StatesGroup):
 
 # Глобальное хранилище данных пользователей
 user_data: Dict[int, Dict] = {}
+
+# === KEEP-ALIVE МЕХАНИЗМ ===
+async def keep_alive():
+    """Поддержание активности сервера каждые 14 минут"""
+    while True:
+        try:
+            await asyncio.sleep(14 * 60)  # 14 минут
+            
+            # Самопинг сервера
+            async with aiohttp.ClientSession() as session:
+                try:
+                    async with session.get('https://rozysk-avto-bot.onrender.com/health') as response:
+                        if response.status == 200:
+                            logger.info("✅ Keep-alive ping successful")
+                        else:
+                            logger.warning(f"⚠️ Keep-alive ping returned status: {response.status}")
+                except Exception as e:
+                    logger.error(f"❌ Keep-alive ping failed: {e}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Keep-alive error: {e}")
 
 # === КОНСТАНТЫ ===
 MOSCOW_REGION_CITIES = {
@@ -276,7 +298,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "upload_file")
 async def upload_file_callback(callback: types.CallbackQuery, state: FSMContext):
     """Запрос загрузки файла"""
-    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    await callback.answer()
     
     await callback.message.edit_text(
         "📁 **Загрузите файл для обработки**\n\n"
@@ -378,7 +400,7 @@ async def handle_file(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "add_filters")
 async def add_filters_callback(callback: types.CallbackQuery, state: FSMContext):
     """Выбор типа фильтров"""
-    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    await callback.answer()
     
     user_id = callback.from_user.id
     
@@ -432,7 +454,7 @@ async def add_filters_callback(callback: types.CallbackQuery, state: FSMContext)
 @dp.callback_query(F.data == "filter_address_types")
 async def filter_address_types_callback(callback: types.CallbackQuery, state: FSMContext):
     """Фильтр по типам адресов"""
-    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    await callback.answer()
     
     user_id = callback.from_user.id
     
@@ -503,7 +525,7 @@ async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "filter_auto_flags")
 async def filter_auto_flags_callback(callback: types.CallbackQuery, state: FSMContext):
     """Фильтр по флагам нового авто"""
-    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    await callback.answer()
     
     user_id = callback.from_user.id
     
@@ -574,7 +596,7 @@ async def toggle_auto_flag(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "apply_filters")
 async def apply_filters_callback(callback: types.CallbackQuery, state: FSMContext):
     """Применение выбранных фильтров"""
-    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    await callback.answer()
     
     user_id = callback.from_user.id
     
@@ -648,13 +670,13 @@ async def reset_filters_callback(callback: types.CallbackQuery, state: FSMContex
 @dp.callback_query(F.data == "back_to_filter_choice")
 async def back_to_filter_choice(callback: types.CallbackQuery, state: FSMContext):
     """Возврат к выбору типа фильтров"""
-    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    await callback.answer()
     await add_filters_callback(callback, state)
 
 @dp.callback_query(F.data.in_(["export_without_filters", "export_with_filters"]))
 async def export_files_callback(callback: types.CallbackQuery, state: FSMContext):
     """Выгрузка файлов"""
-    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    await callback.answer()
     
     user_id = callback.from_user.id
     await callback.message.edit_text("⏳ Подготавливаю файлы для выгрузки...")
@@ -748,7 +770,7 @@ async def export_files(message: types.Message, user_id: int, state: FSMContext):
 @dp.callback_query(F.data == "start")
 async def start_callback(callback: types.CallbackQuery, state: FSMContext):
     """Возврат в главное меню"""
-    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    await callback.answer()
     await state.clear()
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -796,11 +818,11 @@ async def other_messages(message: types.Message, state: FSMContext):
 # FastAPI endpoints для render.com
 @app.get("/")
 async def root():
-    return {"status": "Bot is running", "message": "Telegram bot is active"}
+    return {"status": "Bot is running", "message": "Telegram bot is active", "timestamp": time.time()}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": time.time()}
+    return {"status": "healthy", "timestamp": time.time(), "uptime": "Server is alive"}
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -823,11 +845,30 @@ async def set_webhook():
     except Exception as e:
         logger.error(f"Ошибка установки webhook: {e}")
 
+# Обработка graceful shutdown
+import signal
+
+class GracefulKiller:
+    def __init__(self):
+        self.kill_now = False
+        signal.signal(signal.SIGINT, self._handle_signal)
+        signal.signal(signal.SIGTERM, self._handle_signal)
+
+    def _handle_signal(self, signum, frame):
+        logger.info(f"🛑 Получен сигнал завершения: {signum}")
+        self.kill_now = True
+
 async def main():
     """Основная функция запуска"""
+    killer = GracefulKiller()
+    
     try:
         # Устанавливаем webhook
         await set_webhook()
+        
+        # Запускаем keep-alive задачу
+        keep_alive_task = asyncio.create_task(keep_alive())
+        logger.info("🔄 Keep-alive задача запущена")
         
         # Запускаем приложение
         import uvicorn
@@ -839,16 +880,34 @@ async def main():
             access_log=True
         )
         server = uvicorn.Server(config)
-        await server.serve()
+        
+        # Запускаем сервер
+        server_task = asyncio.create_task(server.serve())
+        
+        # Ждем завершения
+        try:
+            await server_task
+        except asyncio.CancelledError:
+            logger.info("🛑 Сервер остановлен")
         
     except Exception as e:
         logger.error(f"Ошибка запуска: {e}")
     finally:
         try:
+            logger.info("🧹 Очистка ресурсов...")
             await bot.delete_webhook()
             await bot.session.close()
-        except:
-            pass
+            
+            # Останавливаем keep-alive задачу
+            if 'keep_alive_task' in locals():
+                keep_alive_task.cancel()
+                try:
+                    await keep_alive_task
+                except asyncio.CancelledError:
+                    pass
+                    
+        except Exception as e:
+            logger.error(f"Ошибка при очистке: {e}")
 
 # Запуск приложения
 if __name__ == "__main__":
