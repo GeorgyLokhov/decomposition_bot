@@ -570,7 +570,9 @@ app.get('/', (req, res) => {
 // Endpoint для установки webhook
 app.get('/registerWebhook', async (req, res) => {
   try {
-    const webhookUrl = `${req.protocol}://${req.get('host')}/webhook`;
+    // Принудительно используем HTTPS для webhook на Render.com
+    const webhookUrl = `https://${req.get('host')}/webhook`;
+    
     const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -579,7 +581,7 @@ app.get('/registerWebhook', async (req, res) => {
     const result = await response.json();
     
     res.json({
-      success: true,
+      success: result.ok,
       webhook_url: webhookUrl,
       telegram_response: result,
       message: result.ok ? 'Webhook успешно установлен!' : 'Ошибка установки webhook'
@@ -608,8 +610,13 @@ app.post('/webhook', async (req, res) => {
 async function setWebhook() {
   try {
     if (WEBHOOK_URL) {
-      await bot.setWebHook(`${WEBHOOK_URL}/webhook`);
-      console.log('Webhook set successfully');
+      // Убеждаемся что используем HTTPS
+      const webhookUrl = WEBHOOK_URL.startsWith('https://') 
+        ? `${WEBHOOK_URL}/webhook` 
+        : `https://${WEBHOOK_URL.replace('http://', '')}/webhook`;
+        
+      await bot.setWebHook(webhookUrl);
+      console.log('Webhook set successfully to:', webhookUrl);
     } else {
       console.log('WEBHOOK_URL not set, using polling');
       bot.startPolling();
