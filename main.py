@@ -473,19 +473,27 @@ async def filter_address_types_callback(callback: types.CallbackQuery, state: FS
         
     df = user_data[user_id]['df_original']
     
-    # Находим столбец с типами адресов
-    address_type_cols = [col for col in df.columns if any(word in col.lower() 
-                        for word in ['тип', 'type', 'адрес'])]
+    # ИСПРАВЛЕННЫЙ поиск столбца с типами адресов
+    address_type_cols = [col for col in df.columns if 'тип' in col.lower() and 'адрес' in col.lower()]
     
+    # Если не найден точный столбец, ищем просто "тип"
     if not address_type_cols:
-        await callback.message.edit_text("❌ Столбец с типами адресов не найден!")
+        address_type_cols = [col for col in df.columns if 'тип' in col.lower()]
+    
+    # Если и так не найден, показываем доступные столбцы
+    if not address_type_cols:
+        available_cols = [col for col in df.columns]
+        await callback.message.edit_text(
+            f"❌ Столбец с типами адресов не найден!\n\n"
+            f"Доступные столбцы:\n" + "\n".join(f"• {col}" for col in available_cols[:10])
+        )
         return
     
     address_type_col = address_type_cols[0]
     unique_types = get_unique_values(df, address_type_col)
     
     if not unique_types:
-        await callback.message.edit_text("❌ В столбце нет данных для фильтрации!")
+        await callback.message.edit_text(f"❌ В столбце '{address_type_col}' нет данных для фильтрации!")
         return
     
     selected = user_data[user_id]['selected_address_types']
@@ -500,6 +508,7 @@ async def filter_address_types_callback(callback: types.CallbackQuery, state: FS
         parse_mode='Markdown'
     )
     await state.set_state(ProcessStates.select_address_types)
+
 
 @dp.callback_query(F.data.startswith("addr_type_"))
 async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
