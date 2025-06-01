@@ -818,11 +818,27 @@ async def other_messages(message: types.Message, state: FSMContext):
 # FastAPI endpoints для render.com
 @app.get("/")
 async def root():
+    """Главная страница - поддерживает GET и HEAD"""
+    logger.info("🌐 Root endpoint accessed")
     return {"status": "Bot is running", "message": "Telegram bot is active", "timestamp": time.time()}
+
+@app.head("/")
+async def root_head():
+    """HEAD запрос для главной страницы"""
+    logger.info("📡 HEAD request to root")
+    return {}
 
 @app.get("/health")
 async def health_check():
+    """Health check endpoint"""
+    logger.info("🏥 Health check accessed")
     return {"status": "healthy", "timestamp": time.time(), "uptime": "Server is alive"}
+
+@app.head("/health")
+async def health_check_head():
+    """HEAD запрос для health check"""
+    logger.info("📡 HEAD request to health")
+    return {}
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -841,9 +857,9 @@ async def set_webhook():
     try:
         webhook_url = "https://rozysk-avto-bot.onrender.com/webhook"
         await bot.set_webhook(webhook_url)
-        logger.info(f"Webhook установлен: {webhook_url}")
+        logger.info(f"✅ Webhook установлен: {webhook_url}")
     except Exception as e:
-        logger.error(f"Ошибка установки webhook: {e}")
+        logger.error(f"❌ Ошибка установки webhook: {e}")
 
 # Обработка graceful shutdown
 import signal
@@ -882,6 +898,7 @@ async def main():
         server = uvicorn.Server(config)
         
         # Запускаем сервер
+        logger.info(f"🚀 Запускаем сервер на порту {config.port}")
         server_task = asyncio.create_task(server.serve())
         
         # Ждем завершения
@@ -891,7 +908,7 @@ async def main():
             logger.info("🛑 Сервер остановлен")
         
     except Exception as e:
-        logger.error(f"Ошибка запуска: {e}")
+        logger.error(f"❌ Ошибка запуска: {e}")
     finally:
         try:
             logger.info("🧹 Очистка ресурсов...")
