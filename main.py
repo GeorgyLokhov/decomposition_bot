@@ -10,7 +10,7 @@ import time
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters.command import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -683,9 +683,9 @@ async def export_files(message: types.Message, user_id: int, state: FSMContext):
             
             part_filename = f"{part_num} часть розыска авто.csv"
             
-            # Отправляем файл
-            input_file = FSInputFile.from_bytes(
-                output.getvalue(), 
+            # Отправляем файл используя BufferedInputFile
+            input_file = BufferedInputFile(
+                file=output.getvalue(),
                 filename=part_filename
             )
             
