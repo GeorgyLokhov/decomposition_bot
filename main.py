@@ -276,6 +276,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "upload_file")
 async def upload_file_callback(callback: types.CallbackQuery, state: FSMContext):
     """Запрос загрузки файла"""
+    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    
     await callback.message.edit_text(
         "📁 **Загрузите файл для обработки**\n\n"
         "Поддерживаемые форматы: CSV, Excel (.xlsx, .xls)\n"
@@ -373,9 +375,11 @@ async def handle_file(message: types.Message, state: FSMContext):
         await loading_msg.edit_text(f"❌ Ошибка при обработке файла: {str(e)}")
         await state.clear()
 
-@dp.callback_query(F.data == "add_filters", ProcessStates.choose_filters)
+@dp.callback_query(F.data == "add_filters")
 async def add_filters_callback(callback: types.CallbackQuery, state: FSMContext):
     """Выбор типа фильтров"""
+    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    
     user_id = callback.from_user.id
     
     if user_id not in user_data:
@@ -428,10 +432,12 @@ async def add_filters_callback(callback: types.CallbackQuery, state: FSMContext)
 @dp.callback_query(F.data == "filter_address_types")
 async def filter_address_types_callback(callback: types.CallbackQuery, state: FSMContext):
     """Фильтр по типам адресов"""
+    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    
     user_id = callback.from_user.id
     
     if user_id not in user_data:
-        await callback.answer("❌ Данные не найдены!")
+        await callback.message.edit_text("❌ Данные не найдены. Загрузите файл заново.")
         return
         
     df = user_data[user_id]['df_original']
@@ -441,14 +447,14 @@ async def filter_address_types_callback(callback: types.CallbackQuery, state: FS
                         for word in ['тип', 'type', 'адрес'])]
     
     if not address_type_cols:
-        await callback.answer("❌ Столбец с типами адресов не найден!")
+        await callback.message.edit_text("❌ Столбец с типами адресов не найден!")
         return
     
     address_type_col = address_type_cols[0]
     unique_types = get_unique_values(df, address_type_col)
     
     if not unique_types:
-        await callback.answer("❌ В столбце нет данных для фильтрации!")
+        await callback.message.edit_text("❌ В столбце нет данных для фильтрации!")
         return
     
     selected = user_data[user_id]['selected_address_types']
@@ -478,8 +484,10 @@ async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
     
     if address_type in selected:
         selected.remove(address_type)
+        await callback.answer(f"❌ Отменено: {address_type}")
     else:
         selected.add(address_type)
+        await callback.answer(f"✅ Выбрано: {address_type}")
     
     # Обновляем клавиатуру
     df = user_data[user_id]['df_original']
@@ -491,15 +499,16 @@ async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
     keyboard = create_filter_keyboard(unique_types, selected, "addr_type")
     
     await callback.message.edit_reply_markup(reply_markup=keyboard)
-    await callback.answer(f"{'✅ Выбрано' if address_type in selected else '❌ Отменено'}: {address_type}")
 
 @dp.callback_query(F.data == "filter_auto_flags")
 async def filter_auto_flags_callback(callback: types.CallbackQuery, state: FSMContext):
     """Фильтр по флагам нового авто"""
+    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    
     user_id = callback.from_user.id
     
     if user_id not in user_data:
-        await callback.answer("❌ Данные не найдены!")
+        await callback.message.edit_text("❌ Данные не найдены. Загрузите файл заново.")
         return
         
     df = user_data[user_id]['df_original']
@@ -509,14 +518,14 @@ async def filter_auto_flags_callback(callback: types.CallbackQuery, state: FSMCo
                 for word in ['флаг', 'новый', 'flag', 'new'])]
     
     if not flag_cols:
-        await callback.answer("❌ Столбец с флагами не найден!")
+        await callback.message.edit_text("❌ Столбец с флагами не найден!")
         return
     
     flag_col = flag_cols[0]
     unique_flags = get_unique_values(df, flag_col)
     
     if not unique_flags:
-        await callback.answer("❌ В столбце нет данных для фильтрации!")
+        await callback.message.edit_text("❌ В столбце нет данных для фильтрации!")
         return
     
     selected = user_data[user_id]['selected_auto_flags']
@@ -546,8 +555,10 @@ async def toggle_auto_flag(callback: types.CallbackQuery, state: FSMContext):
     
     if auto_flag in selected:
         selected.remove(auto_flag)
+        await callback.answer(f"❌ Отменено: {auto_flag}")
     else:
         selected.add(auto_flag)
+        await callback.answer(f"✅ Выбрано: {auto_flag}")
     
     # Обновляем клавиатуру
     df = user_data[user_id]['df_original']
@@ -559,15 +570,16 @@ async def toggle_auto_flag(callback: types.CallbackQuery, state: FSMContext):
     keyboard = create_filter_keyboard(unique_flags, selected, "auto_flag")
     
     await callback.message.edit_reply_markup(reply_markup=keyboard)
-    await callback.answer(f"{'✅ Выбрано' if auto_flag in selected else '❌ Отменено'}: {auto_flag}")
 
 @dp.callback_query(F.data == "apply_filters")
 async def apply_filters_callback(callback: types.CallbackQuery, state: FSMContext):
     """Применение выбранных фильтров"""
+    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    
     user_id = callback.from_user.id
     
     if user_id not in user_data:
-        await callback.answer("❌ Данные не найдены!")
+        await callback.message.edit_text("❌ Данные не найдены. Загрузите файл заново.")
         return
         
     data = user_data[user_id]
@@ -617,10 +629,12 @@ async def apply_filters_callback(callback: types.CallbackQuery, state: FSMContex
 @dp.callback_query(F.data == "reset_filters")
 async def reset_filters_callback(callback: types.CallbackQuery, state: FSMContext):
     """Сброс всех фильтров"""
+    await callback.answer("🔄 Все фильтры сброшены!")
+    
     user_id = callback.from_user.id
     
     if user_id not in user_data:
-        await callback.answer("❌ Данные не найдены!")
+        await callback.message.edit_text("❌ Данные не найдены. Загрузите файл заново.")
         return
         
     data = user_data[user_id]
@@ -629,17 +643,19 @@ async def reset_filters_callback(callback: types.CallbackQuery, state: FSMContex
     data['selected_auto_flags'].clear()
     data['df_filtered'] = data['df_original'].copy()
     
-    await callback.answer("🔄 Все фильтры сброшены!")
     await add_filters_callback(callback, state)
 
 @dp.callback_query(F.data == "back_to_filter_choice")
 async def back_to_filter_choice(callback: types.CallbackQuery, state: FSMContext):
     """Возврат к выбору типа фильтров"""
+    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
     await add_filters_callback(callback, state)
 
 @dp.callback_query(F.data.in_(["export_without_filters", "export_with_filters"]))
 async def export_files_callback(callback: types.CallbackQuery, state: FSMContext):
     """Выгрузка файлов"""
+    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
+    
     user_id = callback.from_user.id
     await callback.message.edit_text("⏳ Подготавливаю файлы для выгрузки...")
     await export_files(callback.message, user_id, state)
@@ -732,6 +748,7 @@ async def export_files(message: types.Message, user_id: int, state: FSMContext):
 @dp.callback_query(F.data == "start")
 async def start_callback(callback: types.CallbackQuery, state: FSMContext):
     """Возврат в главное меню"""
+    await callback.answer()  # ОБЯЗАТЕЛЬНО отвечаем на callback
     await state.clear()
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
