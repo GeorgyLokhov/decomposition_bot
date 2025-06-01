@@ -193,11 +193,7 @@ function processRawData(data) {
       row['НОМЕРНОЙ ЗНАК'] = plate; // Новый столбец
       
       if (plate) {
-        // Удаляем номер из оригинальной строки. 
-        // Простой replace может быть не идеален, если номер встречается несколько раз.
-        // Для простоты, как в твоем Python коде, используем replace.
         let cleanedAutoData = originalAutoData.replace(plate, '').trim();
-        // Убираем возможные оставшиеся запятые по краям
         cleanedAutoData = cleanedAutoData.replace(/^,\s*|\s*,$/g, '').trim();
         row[autoDataColName] = cleanedAutoData;
       }
@@ -218,8 +214,8 @@ function filterMoscowRegions(data) {
     return MOSCOW_REGIONS.some(moscowRegion => 
       fullLocation.includes(moscowRegion) || 
       region.includes(moscowRegion) ||
-      city.includes('москва') || // Дополнительная проверка для Москвы
-      address.includes('москва') // И в адресе
+      city.includes('москва') || 
+      address.includes('москва') 
     );
   });
 }
@@ -249,7 +245,7 @@ function createSelectionKeyboard(options, selectedItems, callbackPrefix, backBut
     const option1 = options[i];
     const isSelected1 = selectedItems.has(option1);
     row.push({
-      text: `${isSelected1 ? '✅' : '◻️'} ${String(option1).slice(0, 25)}`, // Обрезка для длинных названий
+      text: `${isSelected1 ? '✅' : '◻️'} ${String(option1).slice(0, 25)}`, 
       callback_data: `${callbackPrefix}${Buffer.from(String(option1)).toString('base64')}`
     });
     if (i + 1 < options.length) {
@@ -263,7 +259,7 @@ function createSelectionKeyboard(options, selectedItems, callbackPrefix, backBut
     keyboard.push(row);
   }
   const controlRow = [];
-  if (selectedItems.size > 0 || callbackPrefix.includes('flag')) { // Для флагов авто можно применить и без выбора (означает "все")
+  if (selectedItems.size > 0 || callbackPrefix.includes('flag')) { 
       controlRow.push({ text: '✅ Применить', callback_data: 'apply_selection' });
   }
   if (backButton) {
@@ -298,11 +294,16 @@ function parseExcel(filePath) {
 // Создание CSV файла
 async function createCSVFile(data, filename) {
   if (!data || data.length === 0) return null;
-  const headers = Object.keys(data[0]).map(key => ({ id: key, title: key }));
+  // Убедимся, что все ключи есть во всех объектах для корректных заголовков
+  const allKeys = new Set();
+  data.forEach(row => Object.keys(row).forEach(key => allKeys.add(key)));
+  const headers = Array.from(allKeys).map(key => ({ id: key, title: key }));
+
   const csvWriterInstance = createCsvWriter({
     path: filename,
     header: headers,
-    encoding: 'utf8' // Явная UTF-8 кодировка
+    encoding: 'utf8', 
+    withBOM: true     // <--- ВОТ ОНО, ИСПРАВЛЕНИЕ ДЛЯ EXCEL
   });
   await csvWriterInstance.writeRecords(data);
   return filename;
@@ -375,10 +376,10 @@ bot.on('document', async (msg) => {
     }
 
     await bot.sendMessage(chatId, '🔧 Применяю умную очистку адресов и извлекаю номерные знаки...');
-    let processedData = processRawData(rawData); // Твоя обработка
+    let processedData = processRawData(rawData); 
     
     await bot.sendMessage(chatId, '🗺️ Фильтрую по Москве, Подмосковью и близлежащим городам...');
-    let moscowData = filterMoscowRegions(processedData); // Фильтрация по регионам
+    let moscowData = filterMoscowRegions(processedData); 
     
     if (moscowData.length === 0) {
       await bot.sendMessage(chatId, '❌ После обработки и фильтрации по регионам данных не осталось.');
@@ -386,7 +387,7 @@ bot.on('document', async (msg) => {
       return;
     }
     
-    userState.originalData = moscowData; // Сохраняем данные ПОСЛЕ ВСЕХ начальных обработок
+    userState.originalData = moscowData; 
     userState.addressTypes = getUniqueValues(moscowData, 'Тип адреса');
     userState.newCarFlags = getUniqueValues(moscowData, 'Флаг нового авто');
     
@@ -423,23 +424,23 @@ bot.on('callback_query', async (query) => {
   const data = query.data;
   const userState = userStates.get(chatId);
   
-  if (!userState || !userState.originalData) { // Проверка, что есть что обрабатывать
+  if (!userState || !userState.originalData) { 
     await bot.answerCallbackQuery(query.id, { text: 'Сессия истекла или нет данных. Отправьте файл заново (/start).' });
     if(query.message) await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
     return;
   }
   
   try {
-    await bot.answerCallbackQuery(query.id); // Сразу отвечаем, чтобы кнопка не "висела"
+    await bot.answerCallbackQuery(query.id); 
 
     if (data === 'no_filters') {
-      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
+      if(query.message) await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       await handleNoFilters(chatId, userState);
     } else if (data === 'with_filters') {
-      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
+      if(query.message) await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       await handleWithFilters(chatId, userState);
     } else if (data === 'back') {
-      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
+      if(query.message) await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       await handleBack(chatId, userState);
     } else if (data.startsWith('toggle_address_')) {
       const option = Buffer.from(data.replace('toggle_address_', ''), 'base64').toString();
@@ -448,15 +449,15 @@ bot.on('callback_query', async (query) => {
       const option = Buffer.from(data.replace('toggle_flag_', ''), 'base64').toString();
       await handleToggleFlag(chatId, userState, option, query);
     } else if (data === 'apply_selection') {
-      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
+      if(query.message) await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       await handleApplySelection(chatId, userState);
     } else if (data === 'reselect_filters') {
-      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
+      if(query.message) await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       userState.selectedAddressTypes.clear();
       userState.selectedNewCarFlags.clear();
       await handleWithFilters(chatId, userState);
     } else if (data === 'restart') {
-      await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
+      if(query.message) await bot.deleteMessage(chatId, query.message.message_id).catch(console.error);
       cleanupUserFiles(chatId);
       userStates.delete(chatId);
       initUserState(chatId);
@@ -465,7 +466,6 @@ bot.on('callback_query', async (query) => {
     
   } catch (error) {
     console.error('Error handling callback:', error);
-    // await bot.answerCallbackQuery(query.id, { text: 'Произошла ошибка при обработке выбора.' });
   }
 });
 
@@ -474,7 +474,7 @@ async function handleNoFilters(chatId, userState) {
   try {
     await bot.sendMessage(chatId, '📦 Готовлю файлы без дополнительных фильтров (только умная очистка, номера и регионы)...');
     
-    const chunks = splitDataIntoChunks(userState.originalData); // Делим уже обработанные данные
+    const chunks = splitDataIntoChunks(userState.originalData); 
     const createdFiles = [];
     
     for (let i = 0; i < chunks.length; i++) {
@@ -511,7 +511,7 @@ async function handleNoFilters(chatId, userState) {
 
 // Начало выбора фильтров
 async function handleWithFilters(chatId, userState) {
-  userState.state = STATES.SELECT_ADDRESS_TYPE; // Начинаем с выбора типа адреса
+  userState.state = STATES.SELECT_ADDRESS_TYPE; 
   if (userState.addressTypes.length > 0) {
     const keyboard = createSelectionKeyboard(userState.addressTypes, userState.selectedAddressTypes, 'toggle_address_', true);
     await bot.sendMessage(chatId, 
@@ -519,7 +519,6 @@ async function handleWithFilters(chatId, userState) {
       { reply_markup: keyboard }
     );
   } else {
-    // Если типов адресов нет, переходим к флагам авто или сразу к выгрузке
     await bot.sendMessage(chatId, 'ℹ️ Уникальных типов адресов для фильтрации не найдено.');
     await proceedToNewCarFlags(chatId, userState);
   }
@@ -535,17 +534,16 @@ async function proceedToNewCarFlags(chatId, userState) {
     );
   } else {
     await bot.sendMessage(chatId, 'ℹ️ Уникальных флагов нового авто для фильтрации не найдено.');
-    await applyFiltersAndCreateFiles(chatId, userState); // Сразу создаем файлы, если и флагов нет
+    await applyFiltersAndCreateFiles(chatId, userState); 
   }
 }
-
 
 // Обработка кнопки "Назад"
 async function handleBack(chatId, userState) {
   if (userState.state === STATES.SELECT_ADDRESS_TYPE || userState.state === STATES.FILTERS_APPLIED) {
     userState.state = STATES.CHOOSE_FILTERS;
-    userState.selectedAddressTypes.clear(); // Сбрасываем выбор
-    userState.selectedNewCarFlags.clear();  // Сбрасываем выбор
+    userState.selectedAddressTypes.clear(); 
+    userState.selectedNewCarFlags.clear();  
     await bot.sendMessage(chatId, 
       'Выберите, как выгрузить файлы:',
       {
@@ -558,7 +556,6 @@ async function handleBack(chatId, userState) {
       }
     );
   } else if (userState.state === STATES.SELECT_NEW_CAR_FLAG) {
-    // Возврат от выбора флагов к выбору типов адресов (если они были)
     await handleWithFilters(chatId, userState);
   }
 }
@@ -592,17 +589,12 @@ async function handleToggleFlag(chatId, userState, option, query) {
 // Применение выбора (после выбора типов адресов или флагов)
 async function handleApplySelection(chatId, userState) {
   if (userState.state === STATES.SELECT_ADDRESS_TYPE) {
-    // Переходим к выбору флагов авто
     if (userState.addressTypes.length > 0 && userState.selectedAddressTypes.size === 0) {
-        await bot.sendMessage(chatId, "⚠️ Вы не выбрали ни одного типа адреса. Если хотите пропустить этот шаг, используйте кнопку 'Применить' на следующем шаге или выберите хотя бы один тип.");
-        // Можно либо остаться на этом шаге, либо принудительно перейти дальше, считая, что пользователь хочет "все типы"
-        // Для строгости, оставим пользователя выбирать или предложим "выбрать все" кнопку.
-        // Сейчас - просто информируем. Если нажмет "Применить" снова, то будет считаться как "все" (логика в applyFiltersAndCreateFiles)
+        // Информируем, но не блокируем переход, т.к. отсутствие выбора может означать "все"
+        // await bot.sendMessage(chatId, "⚠️ Вы не выбрали ни одного типа адреса. Будут использованы все типы.");
     }
     await proceedToNewCarFlags(chatId, userState);
-
   } else if (userState.state === STATES.SELECT_NEW_CAR_FLAG) {
-    // Все выборы сделаны, применяем фильтры и создаем файлы
     await applyFiltersAndCreateFiles(chatId, userState);
   }
 }
@@ -612,29 +604,24 @@ async function applyFiltersAndCreateFiles(chatId, userState) {
   try {
     await bot.sendMessage(chatId, '⏳ Применяю выбранные фильтры и готовлю файлы...');
     
-    let dataToFilter = [...userState.originalData]; // Берем уже очищенные и отфильтрованные по региону данные
+    let dataToFilter = [...userState.originalData]; 
     
-    // Фильтр по типам адресов
     if (userState.selectedAddressTypes.size > 0) {
       dataToFilter = dataToFilter.filter(row => {
         const addressType = String(row['Тип адреса'] || row['тип адреса'] || row['ТИП АДРЕСА'] || '');
         return userState.selectedAddressTypes.has(addressType);
       });
     }
-    // Если userState.selectedAddressTypes.size === 0, значит пользователь не выбрал ни одного, фильтрация по этому критерию не применяется.
 
-    // Фильтр по флагам авто
     if (userState.selectedNewCarFlags.size > 0) {
       dataToFilter = dataToFilter.filter(row => {
         const carFlag = String(row['Флаг нового авто'] || row['флаг нового авто'] || row['ФЛАГ НОВОГО АВТО'] || '');
         return userState.selectedNewCarFlags.has(carFlag);
       });
     }
-    // Аналогично, если userState.selectedNewCarFlags.size === 0, фильтрация по этому критерию не применяется.
 
     if (dataToFilter.length === 0) {
       await bot.sendMessage(chatId, '❌ По выбранным фильтрам данных не найдено.');
-      // Предложить перевыбрать фильтры или начать заново
       await bot.sendMessage(chatId, "Попробуйте изменить выбор:", {
         reply_markup: {
           inline_keyboard: [
@@ -665,16 +652,8 @@ async function applyFiltersAndCreateFiles(chatId, userState) {
     userFiles.get(chatId).push(...createdFiles.map(f => f.filename));
     
     let filterSummary = `Фильтры применены:\n`;
-    if (userState.selectedAddressTypes.size > 0) {
-      filterSummary += `🏠 Типы адресов: ${Array.from(userState.selectedAddressTypes).join(', ')}\n`;
-    } else {
-      filterSummary += `🏠 Типы адресов: Все\n`;
-    }
-    if (userState.selectedNewCarFlags.size > 0) {
-      filterSummary += `🚗 Флаги авто: ${Array.from(userState.selectedNewCarFlags).join(', ')}\n`;
-    } else {
-      filterSummary += `🚗 Флаги авто: Все\n`;
-    }
+    filterSummary += `🏠 Типы адресов: ${userState.selectedAddressTypes.size > 0 ? Array.from(userState.selectedAddressTypes).join(', ') : 'Все'}\n`;
+    filterSummary += `🚗 Флаги авто: ${userState.selectedNewCarFlags.size > 0 ? Array.from(userState.selectedNewCarFlags).join(', ') : 'Все'}\n`;
 
     await bot.sendMessage(chatId, 
       `✅ Готово! Отправлено файлов: ${createdFiles.length}\n\n${filterSummary}\n💡 Файлы готовы для загрузки в Google My Maps.`,
@@ -700,7 +679,6 @@ app.get('/', (req, res) => res.send('Bot is running!'));
 app.get('/registerWebhook', async (req, res) => {
   try {
     const host = req.get('host');
-    // Для Render.com важно использовать X-Forwarded-Proto, если он есть, или предполагать https
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const webhookUrl = `${protocol}://${host}/webhook`;
     
@@ -723,14 +701,13 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(200);
   } catch (error) {
     console.error('Webhook error:', error);
-    res.sendStatus(500); // Отвечаем ошибкой, но не останавливаем сервер
+    res.sendStatus(500); 
   }
 });
 
 async function setupWebhook() {
   try {
     if (WEBHOOK_URL) {
-      // Убеждаемся что используем HTTPS и правильный путь
       let fullWebhookUrl = WEBHOOK_URL;
       if (!fullWebhookUrl.startsWith('https://')) {
           fullWebhookUrl = `https://${fullWebhookUrl.replace(/^http:\/\//i, '')}`;
@@ -749,7 +726,6 @@ async function setupWebhook() {
     }
   } catch (error) {
     console.error('Error setting webhook during startup:', error);
-    // Если установка вебхука не удалась, можно перейти в режим polling
     console.log('Failed to set webhook, attempting to start in polling mode.');
     bot.startPolling({ polling: { autoStart: true, interval: 300 } }).catch(err => {
         console.error("Polling error after webhook failure:", err);
@@ -757,11 +733,11 @@ async function setupWebhook() {
   }
 }
 
-// Очистка при завершении
 process.on('SIGTERM', () => { userFiles.forEach((_files, chatId) => cleanupUserFiles(chatId)); process.exit(0); });
 process.on('SIGINT', () => { userFiles.forEach((_files, chatId) => cleanupUserFiles(chatId)); process.exit(0); });
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  setupWebhook(); // Вызываем настройку вебхука при старте
+  setupWebhook(); 
 });
+
