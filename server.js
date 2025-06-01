@@ -20,6 +20,11 @@ if (!BOT_TOKEN) {
 const bot = new TelegramBot(BOT_TOKEN);
 app.use(express.json());
 
+// Создаем папку uploads если она не существует
+if (!fs.existsSync('uploads')) {
+  fs.mkdirSync('uploads');
+}
+
 // Хранилище состояний пользователей
 const userStates = new Map();
 const userFiles = new Map();
@@ -64,8 +69,12 @@ function cleanupUserFiles(chatId) {
   if (userFiles.has(chatId)) {
     const files = userFiles.get(chatId);
     files.forEach(file => {
-      if (fs.existsSync(file)) {
-        fs.unlinkSync(file);
+      try {
+        if (fs.existsSync(file)) {
+          fs.unlinkSync(file);
+        }
+      } catch (error) {
+        console.error('Error deleting file:', error);
       }
     });
     userFiles.delete(chatId);
@@ -75,9 +84,9 @@ function cleanupUserFiles(chatId) {
 // Фильтрация по московским регионам
 function filterMoscowRegions(data) {
   return data.filter(row => {
-    const region = (row['Регион'] || row['регион'] || row['РЕГИОН'] || '').toLowerCase();
-    const city = (row['Город'] || row['город'] || row['ГОРОД'] || '').toLowerCase();
-    const address = (row['Адрес'] || row['адрес'] || row['АДРЕС'] || '').toLowerCase();
+    const region = String(row['Регион'] || row['регион'] || row['РЕГИОН'] || '').toLowerCase();
+    const city = String(row['Город'] || row['город'] || row['ГОРОД'] || '').toLowerCase();
+    const address = String(row['Адрес'] || row['адрес'] || row['АДРЕС'] || '').toLowerCase();
     
     const fullLocation = `${region} ${city} ${address}`.toLowerCase();
     
@@ -114,7 +123,7 @@ function createSelectionKeyboard(options, selectedItems, backButton = true) {
     const isSelected1 = selectedItems.has(option1);
     row.push({
       text: `${isSelected1 ? '✅' : '◻️'} ${option1}`,
-      callback_data: `toggle_${option1}`
+      callback_data: `toggle_${Buffer.from(option1).toString('base64')}`
     });
     
     if (i + 1 < options.length) {
@@ -122,7 +131,7 @@ function createSelectionKeyboard(options, selectedItems, backButton = true) {
       const isSelected2 = selectedItems.has(option2);
       row.push({
         text: `${isSelected2 ? '✅' : '◻️'} ${option2}`,
-        callback_data: `toggle_${option2}`
+        callback_data: `toggle_${Buffer.from(option2).toString('base64')}`
       });
     }
     
@@ -199,13 +208,17 @@ bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   initUserState(chatId);
   
-  await bot.sendMessage(chatId, 
-    '🤖 Привет! Я бот для обработки файлов.\n\n' +
-    '📁 Отправьте мне CSV или Excel файл, и я обработаю его:\n' +
-    '• Оставлю только данные по Москве и Подмосковью\n' +
-    '• Предложу настроить фильтры\n' +
-    '• Разделю файл по выбранным критериям'
-  );
+  try {
+    await bot.sendMessage(chatId, 
+      '🤖 Привет! Я бот для обработки файлов.\n\n' +
+      '📁 Отправьте мне CSV или Excel файл, и я обработаю его:\n' +
+      '• Оставлю только данные по Москве и Подмосковью\n' +
+      '• Предложу настроить фильтры\n' +
+      '• Разделю файл по выбранным критериям'
+    );
+  } catch (error) {
+    console.error('Error sending start message:', error);
+  }
 });
 
 // Обработчик загрузки документов
@@ -294,31 +307,31 @@ bot.on('callback_query', async (query) => {
   
   try {
     if (data === 'no_filters') {
-      // Выгружаем без фильтров
       await handleNoFilters(chatId, userState);
       
     } else if (data === 'with_filters') {
-      // Переходим к выбору фильтров
       await handleWithFilters(chatId, userState);
       
     } else if (data === 'back') {
-      // Обработка кнопки "Назад"
       await handleBack(chatId, userState);
       
     } else if (data.startsWith('toggle_')) {
-      // Обработка переключения опций
-      const option = data.replace('toggle_', '');
-      await handleToggle(chatId, userState, option);
+      const option = Buffer.from(data.replace('toggle_', ''), 'base64').toString();
+      await handleToggle(chatId, userState, option, query);
       
     } else if (data === 'apply_selection') {
-      // Применение выбора
       await handleApplySelection(chatId, userState);
       
     } else if (data === 'reselect_filters') {
-      // Перевыбор фильтров
       userState.selectedAddressTypes.clear();
       userState.selectedNewCarFlags.clear();
       await handleWithFilters(chatId, userState);
+      
+    } else if (data === 'restart') {
+      cleanupUserFiles(chatId);
+      userStates.delete(chatId);
+      initUserState(chatId);
+      await bot.sendMessage(chatId, 'Отправьте новый файл для обработки');
     }
     
     await bot.answerCallbackQuery(query.id);
@@ -339,13 +352,11 @@ async function handleNoFilters(chatId, userState) {
       caption: `📁 Обработанный файл без фильтров\n📊 Записей: ${userState.originalData.length}`
     });
     
-    // Добавляем файл в список для очистки
     if (!userFiles.has(chatId)) {
       userFiles.set(chatId, []);
     }
     userFiles.get(chatId).push(filename);
     
-    // Предлагаем применить фильтры
     await bot.sendMessage(chatId, 
       'Хотите также получить файлы с фильтрами?',
       {
@@ -353,7 +364,7 @@ async function handleNoFilters(chatId, userState) {
           inline_keyboard: [
             [
               { text: '🎯 Да, с фильтрами', callback_data: 'with_filters' },
-              { text: '◀️ Начать заново', callback_data: 'restart' }
+              { text: '🆕 Новый файл', callback_data: 'restart' }
             ]
           ]
         }
@@ -406,7 +417,7 @@ async function handleBack(chatId, userState) {
 }
 
 // Обработка переключения опций
-async function handleToggle(chatId, userState, option) {
+async function handleToggle(chatId, userState, option, query) {
   if (userState.state === STATES.SELECT_ADDRESS_TYPE) {
     if (userState.selectedAddressTypes.has(option)) {
       userState.selectedAddressTypes.delete(option);
@@ -420,10 +431,14 @@ async function handleToggle(chatId, userState, option) {
       true
     );
     
-    await bot.editMessageReplyMarkup(keyboard, {
-      chat_id: chatId,
-      message_id: query.message.message_id
-    });
+    try {
+      await bot.editMessageReplyMarkup(keyboard, {
+        chat_id: chatId,
+        message_id: query.message.message_id
+      });
+    } catch (error) {
+      console.error('Error editing message:', error);
+    }
     
   } else if (userState.state === STATES.SELECT_NEW_CAR_FLAG) {
     if (userState.selectedNewCarFlags.has(option)) {
@@ -438,17 +453,20 @@ async function handleToggle(chatId, userState, option) {
       true
     );
     
-    await bot.editMessageReplyMarkup(keyboard, {
-      chat_id: chatId,
-      message_id: query.message.message_id
-    });
+    try {
+      await bot.editMessageReplyMarkup(keyboard, {
+        chat_id: chatId,
+        message_id: query.message.message_id
+      });
+    } catch (error) {
+      console.error('Error editing message:', error);
+    }
   }
 }
 
 // Применение выбора
 async function handleApplySelection(chatId, userState) {
   if (userState.state === STATES.SELECT_ADDRESS_TYPE && userState.selectedAddressTypes.size > 0) {
-    // Переходим к выбору флагов авто
     userState.state = STATES.SELECT_NEW_CAR_FLAG;
     
     const keyboard = createSelectionKeyboard(
@@ -464,7 +482,6 @@ async function handleApplySelection(chatId, userState) {
     );
     
   } else if (userState.state === STATES.SELECT_NEW_CAR_FLAG && userState.selectedNewCarFlags.size > 0) {
-    // Применяем фильтры и создаем файлы
     await applyFiltersAndCreateFiles(chatId, userState);
   }
 }
@@ -474,10 +491,8 @@ async function applyFiltersAndCreateFiles(chatId, userState) {
   try {
     await bot.sendMessage(chatId, '⏳ Создаю файлы с выбранными фильтрами...');
     
-    // Фильтруем данные
     let filteredData = [...userState.originalData];
     
-    // Фильтр по типам адресов
     if (userState.selectedAddressTypes.size > 0) {
       filteredData = filteredData.filter(row => {
         const addressType = row['Тип адреса'] || row['тип адреса'] || row['ТИП АДРЕСА'] || '';
@@ -485,7 +500,6 @@ async function applyFiltersAndCreateFiles(chatId, userState) {
       });
     }
     
-    // Фильтр по флагам авто
     if (userState.selectedNewCarFlags.size > 0) {
       filteredData = filteredData.filter(row => {
         const carFlag = row['Флаг нового авто'] || row['флаг нового авто'] || row['ФЛАГ НОВОГО АВТО'] || '';
@@ -498,34 +512,29 @@ async function applyFiltersAndCreateFiles(chatId, userState) {
       return;
     }
     
-    // Разделяем по типам адресов
     const splitData = splitDataByAddressTypes(filteredData, userState.selectedAddressTypes);
-    
     const createdFiles = [];
     
-    // Создаем файлы для каждого типа адреса
     for (const [addressType, data] of Object.entries(splitData)) {
       if (data.length > 0) {
-        const filename = `uploads/${addressType.replace(/[^a-zA-Zа-яА-Я0-9]/g, '_')}_${chatId}_${Date.now()}.csv`;
+        const safeName = addressType.replace(/[^a-zA-Zа-яА-Я0-9]/g, '_');
+        const filename = `uploads/${safeName}_${chatId}_${Date.now()}.csv`;
         await createCSVFile(data, filename);
         createdFiles.push({ filename, addressType, count: data.length });
       }
     }
     
-    // Отправляем файлы
     for (const file of createdFiles) {
       await bot.sendDocument(chatId, file.filename, {
         caption: `📁 ${file.addressType}\n📊 Записей: ${file.count}`
       });
     }
     
-    // Добавляем файлы в список для очистки
     if (!userFiles.has(chatId)) {
       userFiles.set(chatId, []);
     }
     userFiles.get(chatId).push(...createdFiles.map(f => f.filename));
     
-    // Предлагаем перевыбрать фильтры
     await bot.sendMessage(chatId, 
       `✅ Готово! Создано файлов: ${createdFiles.length}\n\n` +
       `Выбранные фильтры:\n` +
@@ -552,7 +561,7 @@ async function applyFiltersAndCreateFiles(chatId, userState) {
 }
 
 // Webhook endpoint
-app.post(`/webhook`, async (req, res) => {
+app.post('/webhook', async (req, res) => {
   try {
     await bot.processUpdate(req.body);
     res.sendStatus(200);
@@ -560,6 +569,11 @@ app.post(`/webhook`, async (req, res) => {
     console.error('Webhook error:', error);
     res.sendStatus(500);
   }
+});
+
+// Health check
+app.get('/', (req, res) => {
+  res.send('Bot is running!');
 });
 
 // Установка webhook при запуске
@@ -582,6 +596,13 @@ process.on('SIGTERM', () => {
   userFiles.forEach((files, chatId) => {
     cleanupUserFiles(chatId);
   });
+});
+
+process.on('SIGINT', () => {
+  userFiles.forEach((files, chatId) => {
+    cleanupUserFiles(chatId);
+  });
+  process.exit(0);
 });
 
 app.listen(PORT, () => {
