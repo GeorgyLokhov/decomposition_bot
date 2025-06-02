@@ -10,10 +10,6 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
 const WEBHOOK_URL = process.env.WEBHOOK_URL || `https://rozysk-avto-bot.onrender.com/webhook/${BOT_TOKEN}`;
 
-// Максимальный размер файла (в байтах) - увеличили лимиты
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
-const MAX_BASE64_SIZE = 5 * 1024 * 1024; // 5MB в base64 (~3.75MB исходный файл)
-
 // Создаем бота БЕЗ polling для продакшена
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
@@ -50,8 +46,7 @@ async function fileToBase64(fileUrl) {
     console.log('Downloading file from:', fileUrl);
     const response = await axios.get(fileUrl, { 
       responseType: 'arraybuffer',
-      timeout: 60000,
-      maxContentLength: MAX_FILE_SIZE
+      timeout: 60000
     });
     
     console.log('File downloaded, size:', response.data.byteLength, 'bytes');
@@ -79,8 +74,7 @@ async function processFileInAppsScript(fileContent, fileName, fileType) {
       headers: {
         'Content-Type': 'application/json'
       },
-      timeout: 300000, // 5 минут
-      maxContentLength: 50 * 1024 * 1024 // 50MB
+      timeout: 300000 // 5 минут
     });
 
     console.log('Apps Script response received');
@@ -91,17 +85,9 @@ async function processFileInAppsScript(fileContent, fileName, fileType) {
     if (error.response) {
       console.error('Response status:', error.response.status);
       console.error('Response data:', error.response.data);
-      
-      if (error.response.status === 500) {
-        throw new Error('Ошибка обработки в Google Apps Script. Файл может быть поврежден или слишком сложен для обработки.');
-      }
     }
     
-    if (error.message.includes('timeout')) {
-      throw new Error('Превышено время обработки. Попробуйте файл меньшего размера.');
-    }
-    
-    throw error;
+    throw new Error('Ошибка обработки в Google Apps Script. Попробуйте еще раз или используйте файл меньшего размера.');
   }
 }
 
@@ -122,10 +108,6 @@ async function handleStart(chatId) {
 • CSV (.csv)
 • Excel (.xlsx, .xls)
 
-⚠️ **Ограничения:**
-• Максимальный размер файла: 20MB
-• Рекомендуемый размер: до 5MB
-
 📤 **Просто отправьте мне файл для обработки!**
   `;
   
@@ -140,12 +122,6 @@ async function handleDocument(chatId, document) {
   console.log(`Processing document: ${fileName}, size: ${fileSize} bytes`);
 
   try {
-    // Проверяем размер файла
-    if (fileSize > MAX_FILE_SIZE) {
-      await bot.sendMessage(chatId, `❌ Файл слишком большой (${Math.round(fileSize/1024/1024*100)/100}MB). Максимальный размер: 20MB`);
-      return;
-    }
-
     // Проверяем формат файла
     if (!isSupportedFile(fileName)) {
       await bot.sendMessage(chatId, '❌ Поддерживаются только файлы: CSV, Excel (.xlsx, .xls)');
@@ -167,15 +143,6 @@ async function handleDocument(chatId, document) {
 
     const fileContent = await fileToBase64(fileUrl);
     const fileType = getFileType(fileName);
-
-    // Более разумная проверка размера base64 (увеличили лимит)
-    if (fileContent.length > MAX_BASE64_SIZE) {
-      await bot.editMessageText(`❌ Файл слишком большой для обработки (${Math.round(fileContent.length/1024/1024*100)/100}MB после кодирования). Попробуйте файл меньшего размера.`, {
-        chat_id: chatId,
-        message_id: processingMsg.message_id
-      });
-      return;
-    }
 
     // Отправляем на обработку в Apps Script
     await bot.editMessageText('🔄 Обрабатываю данные в облаке... Это может занять несколько минут.', {
@@ -243,23 +210,14 @@ async function handleDocument(chatId, document) {
 
   } catch (error) {
     console.error('Error processing document:', error);
-    
-    let errorMessage = '❌ Произошла ошибка при обработке файла.';
-    
-    if (error.message.includes('timeout')) {
-      errorMessage = '❌ Превышено время ожидания. Попробуйте файл меньшего размера.';
-    } else if (error.message.includes('Apps Script')) {
-      errorMessage = `❌ ${error.message}`;
-    }
-    
-    await bot.sendMessage(chatId, errorMessage);
+    await bot.sendMessage(chatId, `❌ ${error.message}`);
   }
 }
 
 // Обработчик других сообщений
 async function handleMessage(chatId, text) {
   if (text && !text.startsWith('/')) {
-    await bot.sendMessage(chatId, '📎 Отправьте файл для обработки (CSV или Excel)\n\n⚠️ Максимальный размер: 20MB');
+    await bot.sendMessage(chatId, '📎 Отправьте файл для обработки (CSV или Excel)');
   }
 }
 
@@ -302,77 +260,3 @@ app.get('/', (req, res) => {
     <html>
     <head>
       <title>Rozysk Avto Bot</title>
-      <style>
-        body { font-family: Arial, sans-serif; margin: 50px; text-align: center; }
-        .status { color: green; font-size: 24px; }
-        .info { color: #666; margin-top: 20px; }
-      </style>
-    </head>
-    <body>
-      <h1>🚗 Rozysk Avto Bot</h1>
-      <div class="status">✅ Сервис работает!</div>
-      <div class="info">
-        <p>Перейдите в Telegram: <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
-        <p>Webhook URL: ${WEBHOOK_URL}</p>
-        <p>Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}</p>
-      </div>
-    </body>
-    </html>
-  `);
-});
-
-app.get('/doget', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    message: 'Rozysk Avto Bot server is running',
-    webhook: WEBHOOK_URL,
-    timestamp: new Date().toISOString(),
-    limits: {
-      maxFileSize: `${MAX_FILE_SIZE / 1024 / 1024}MB`,
-      maxBase64Size: `${MAX_BASE64_SIZE / 1024 / 1024}MB`
-    }
-  });
-});
-
-app.post('/dopost', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    received: req.body,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('Получен SIGTERM, завершаем работу...');
-  try {
-    await bot.deleteWebHook();
-    console.log('Webhook удален');
-  } catch (error) {
-    console.error('Ошибка при удалении webhook:', error);
-  }
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  console.log('Получен SIGINT, завершаем работу...');
-  try {
-    await bot.deleteWebHook();
-    console.log('Webhook удален');
-  } catch (error) {
-    console.error('Ошибка при удалении webhook:', error);
-  }
-  process.exit(0);
-});
-
-// Запуск сервера
-app.listen(port, async () => {
-  console.log(`🚀 Server running on port ${port}`);
-  console.log(`📡 Webhook URL: ${WEBHOOK_URL}`);
-  console.log(`📏 Limits: File ${MAX_FILE_SIZE/1024/1024}MB, Base64 ${MAX_BASE64_SIZE/1024/1024}MB`);
-  
-  // Устанавливаем webhook
-  await setupWebhook();
-  
-  console.log('✅ Telegram bot is ready with webhook!');
-});
