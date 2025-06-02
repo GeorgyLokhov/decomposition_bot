@@ -10,6 +10,9 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
 const WEBHOOK_URL = process.env.WEBHOOK_URL || `https://rozysk-avto-bot.onrender.com/webhook/${BOT_TOKEN}`;
 
+// Максимальный размер файла (в байтах)
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
 // Создаем бота БЕЗ polling для продакшена
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
@@ -45,7 +48,8 @@ async function fileToBase64(fileUrl) {
   try {
     const response = await axios.get(fileUrl, { 
       responseType: 'arraybuffer',
-      timeout: 30000
+      timeout: 30000,
+      maxContentLength: MAX_FILE_SIZE
     });
     const base64 = Buffer.from(response.data).toString('base64');
     return base64;
@@ -58,6 +62,8 @@ async function fileToBase64(fileUrl) {
 // Отправляем файл на обработку в Apps Script
 async function processFileInAppsScript(fileContent, fileName, fileType) {
   try {
+    console.log(`Sending to Apps Script: ${fileName}, size: ${fileContent.length}`);
+    
     const response = await axios.post(APPS_SCRIPT_URL, {
       action: 'process_file',
       fileContent: fileContent,
@@ -67,12 +73,18 @@ async function processFileInAppsScript(fileContent, fileName, fileType) {
       headers: {
         'Content-Type': 'application/json'
       },
-      timeout: 60000
+      timeout: 300000, // 5 минут
+      maxContentLength: 50 * 1024 * 1024 // 50MB
     });
 
     return response.data;
   } catch (error) {
     console.error('Error processing file in Apps Script:', error);
+    
+    if (error.response && error.response.status === 500) {
+      throw new Error('Ошибка обработки файла в Google Apps Script. Попробуйте файл меньшего размера или другой формат.');
+    }
+    
     throw error;
   }
 }
@@ -94,6 +106,10 @@ async function handleStart(chatId) {
 • CSV (.csv)
 • Excel (.xlsx, .xls)
 
+⚠️ **Ограничения:**
+• Максимальный размер файла: 10MB
+• Рекомендуемый размер: до 5MB
+
 📤 **Просто отправьте мне файл для обработки!**
   `;
   
@@ -103,8 +119,15 @@ async function handleStart(chatId) {
 // Обработчик документов
 async function handleDocument(chatId, document) {
   const fileName = document.file_name;
+  const fileSize = document.file_size;
 
   try {
+    // Проверяем размер файла
+    if (fileSize > MAX_FILE_SIZE) {
+      await bot.sendMessage(chatId, `❌ Файл слишком большой (${Math.round(fileSize/1024/1024)}MB). Максимальный размер: 10MB`);
+      return;
+    }
+
     // Проверяем формат файла
     if (!isSupportedFile(fileName)) {
       await bot.sendMessage(chatId, '❌ Поддерживаются только файлы: CSV, Excel (.xlsx, .xls)');
@@ -112,15 +135,29 @@ async function handleDocument(chatId, document) {
     }
 
     // Отправляем сообщение о начале обработки
-    const processingMsg = await bot.sendMessage(chatId, '⏳ Обрабатываю файл...');
+    const processingMsg = await bot.sendMessage(chatId, '⏳ Загружаю файл...');
 
     // Получаем ссылку на файл
     const fileInfo = await bot.getFile(document.file_id);
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fileInfo.file_path}`;
 
     // Конвертируем в base64
+    await bot.editMessageText('📤 Конвертирую файл...', {
+      chat_id: chatId,
+      message_id: processingMsg.message_id
+    });
+
     const fileContent = await fileToBase64(fileUrl);
     const fileType = getFileType(fileName);
+
+    // Проверяем размер base64
+    if (fileContent.length > 200000) { // ~150KB после base64
+      await bot.editMessageText('❌ Файл слишком большой для обработки. Попробуйте файл меньшего размера.', {
+        chat_id: chatId,
+        message_id: processingMsg.message_id
+      });
+      return;
+    }
 
     // Отправляем на обработку в Apps Script
     await bot.editMessageText('🔄 Обрабатываю данные в облаке...', {
@@ -188,14 +225,23 @@ async function handleDocument(chatId, document) {
 
   } catch (error) {
     console.error('Error processing document:', error);
-    await bot.sendMessage(chatId, `❌ Произошла ошибка: ${error.message}`);
+    
+    let errorMessage = '❌ Произошла ошибка при обработке файла.';
+    
+    if (error.message.includes('timeout')) {
+      errorMessage = '❌ Превышено время ожидания. Попробуйте файл меньшего размера.';
+    } else if (error.message.includes('500')) {
+      errorMessage = '❌ Ошибка сервера обработки. Попробуйте позже или используйте другой файл.';
+    }
+    
+    await bot.sendMessage(chatId, errorMessage);
   }
 }
 
 // Обработчик других сообщений
 async function handleMessage(chatId, text) {
   if (text && !text.startsWith('/')) {
-    await bot.sendMessage(chatId, '📎 Отправьте файл для обработки (CSV или Excel)');
+    await bot.sendMessage(chatId, '📎 Отправьте файл для обработки (CSV или Excel)\n\n⚠️ Максимальный размер: 10MB');
   }
 }
 
