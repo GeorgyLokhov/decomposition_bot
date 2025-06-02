@@ -5,24 +5,26 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// URL вашего Google Apps Script веб-приложения
-const GOOGLE_SCRIPT_URL = process.env.GOOGLE_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbyNLDSm1w_pFONv3V_CnSy-MpYBE9p12iGz3INVuWeHFGbdyfc55UCBW8H4mTW9nPzrog/exec';
+// URL вашего Google Apps Script
+const GOOGLE_SCRIPT_URL = process.env.GOOGLE_SCRIPT_URL;
 
 app.post('/webhook', async (req, res) => {
   try {
+    // Просто перенаправляем в Google Apps Script
     await axios.post(GOOGLE_SCRIPT_URL, req.body, {
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 5000
     });
     
     res.status(200).send('OK');
   } catch (error) {
-    console.error('Error:', error);
-    res.status(500).send('Error');
+    console.error('Webhook error:', error.message);
+    res.status(200).send('OK'); // Возвращаем OK даже при ошибке
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('Rozysk Avto Bot is running!');
+  res.send('Bot is running!');
 });
 
 app.listen(PORT, () => {
