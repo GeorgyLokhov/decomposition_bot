@@ -10,8 +10,9 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
 const WEBHOOK_URL = process.env.WEBHOOK_URL || `https://rozysk-avto-bot.onrender.com/webhook/${BOT_TOKEN}`;
 
-// Максимальный размер файла (в байтах) - 5MB для надежности
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+// Максимальный размер файла (в байтах) - увеличили лимиты
+const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
+const MAX_BASE64_SIZE = 5 * 1024 * 1024; // 5MB в base64 (~3.75MB исходный файл)
 
 // Создаем бота БЕЗ polling для продакшена
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
@@ -49,7 +50,7 @@ async function fileToBase64(fileUrl) {
     console.log('Downloading file from:', fileUrl);
     const response = await axios.get(fileUrl, { 
       responseType: 'arraybuffer',
-      timeout: 30000,
+      timeout: 60000,
       maxContentLength: MAX_FILE_SIZE
     });
     
@@ -90,23 +91,18 @@ async function processFileInAppsScript(fileContent, fileName, fileType) {
     if (error.response) {
       console.error('Response status:', error.response.status);
       console.error('Response data:', error.response.data);
+      
+      if (error.response.status === 500) {
+        throw new Error('Ошибка обработки в Google Apps Script. Файл может быть поврежден или слишком сложен для обработки.');
+      }
     }
     
-    if (error.response && error.response.status === 500) {
-      throw new Error('Ошибка обработки файла в Google Apps Script. Попробуйте файл меньшего размера или другой формат.');
+    if (error.message.includes('timeout')) {
+      throw new Error('Превышено время обработки. Попробуйте файл меньшего размера.');
     }
     
     throw error;
   }
-}
-
-// Форматируем размер файла для отображения
-function formatFileSize(bytes) {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
 // Обработчик команды /start
@@ -127,8 +123,8 @@ async function handleStart(chatId) {
 • Excel (.xlsx, .xls)
 
 ⚠️ **Ограничения:**
-• Максимальный размер файла: 5MB
-• Для больших файлов используйте CSV формат
+• Максимальный размер файла: 20MB
+• Рекомендуемый размер: до 5MB
 
 📤 **Просто отправьте мне файл для обработки!**
   `;
@@ -141,18 +137,12 @@ async function handleDocument(chatId, document) {
   const fileName = document.file_name;
   const fileSize = document.file_size;
 
-  try {
-    console.log(`Processing document: ${fileName}, size: ${fileSize} bytes`);
+  console.log(`Processing document: ${fileName}, size: ${fileSize} bytes`);
 
-    // Проверяем размер файла (только реальный размер, не base64)
+  try {
+    // Проверяем размер файла
     if (fileSize > MAX_FILE_SIZE) {
-      await bot.sendMessage(chatId, 
-        `❌ Файл слишком большой (${formatFileSize(fileSize)}). ` +
-        `Максимальный размер: ${formatFileSize(MAX_FILE_SIZE)}\n\n` +
-        `💡 Попробуйте:\n` +
-        `• Сохранить файл в формате CSV\n` +
-        `• Разделить данные на несколько файлов`
-      );
+      await bot.sendMessage(chatId, `❌ Файл слишком большой (${Math.round(fileSize/1024/1024*100)/100}MB). Максимальный размер: 20MB`);
       return;
     }
 
@@ -163,9 +153,7 @@ async function handleDocument(chatId, document) {
     }
 
     // Отправляем сообщение о начале обработки
-    const processingMsg = await bot.sendMessage(chatId, 
-      `⏳ Загружаю файл "${fileName}" (${formatFileSize(fileSize)})...`
-    );
+    const processingMsg = await bot.sendMessage(chatId, '⏳ Загружаю файл...');
 
     // Получаем ссылку на файл
     const fileInfo = await bot.getFile(document.file_id);
@@ -180,8 +168,17 @@ async function handleDocument(chatId, document) {
     const fileContent = await fileToBase64(fileUrl);
     const fileType = getFileType(fileName);
 
+    // Более разумная проверка размера base64 (увеличили лимит)
+    if (fileContent.length > MAX_BASE64_SIZE) {
+      await bot.editMessageText(`❌ Файл слишком большой для обработки (${Math.round(fileContent.length/1024/1024*100)/100}MB после кодирования). Попробуйте файл меньшего размера.`, {
+        chat_id: chatId,
+        message_id: processingMsg.message_id
+      });
+      return;
+    }
+
     // Отправляем на обработку в Apps Script
-    await bot.editMessageText('🔄 Обрабатываю данные в облаке...\n⏱️ Это может занять несколько минут', {
+    await bot.editMessageText('🔄 Обрабатываю данные в облаке... Это может занять несколько минут.', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
@@ -197,55 +194,45 @@ async function handleDocument(chatId, document) {
 ✅ **Файл успешно обработан!**
 
 📊 **Статистика:**
-• Исходный файл: ${fileName} (${formatFileSize(fileSize)})
-• Всего строк данных: ${result.totalRows}
+• Всего строк: ${result.totalRows}
 • Создано частей: ${result.partsCount}
 
-📁 **Отправляю обработанные файлы...**
+📁 **Получаю обработанные файлы...**
       `;
 
       await bot.sendMessage(chatId, resultMessage, { parse_mode: 'Markdown' });
 
-      // Отправляем файлы сразу без дополнительной инструкции
+      // Отправляем инструкцию
+      const instructionMessage = `
+💡 **Инструкция по использованию:**
+
+1. Сохраните полученные файлы на свое устройство
+2. Перейдите в Google My Maps (mymaps.google.com)
+3. Создайте новую карту
+4. Загружайте каждый файл по отдельности для получения меток на карте
+5. Адреса автоматически преобразуются в точки на карте
+
+🎯 **Каждый файл содержит до 2000 записей для оптимальной работы с картами**
+      `;
+
+      await bot.sendMessage(chatId, instructionMessage, { parse_mode: 'Markdown' });
+
+      // Отправляем файлы
       for (let i = 0; i < result.files.length; i++) {
         const file = result.files[i];
         const buffer = Buffer.from(file.content, 'base64');
         
         await bot.sendDocument(chatId, buffer, {
-          filename: file.name,
-          caption: i === 0 ? '📄 Обработанные данные готовы!' : undefined
+          filename: file.name
         });
 
         // Небольшая задержка между отправками
         if (i < result.files.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise(resolve => setTimeout(resolve, 1500));
         }
       }
 
-      // Отправляем инструкцию после всех файлов
-      const instructionMessage = `
-🎉 **Все файлы отправлены!**
-
-💡 **Инструкция по использованию:**
-
-1️⃣ Сохраните полученные файлы на свое устройство
-2️⃣ Перейдите в [Google My Maps](https://mymaps.google.com)
-3️⃣ Создайте новую карту
-4️⃣ Загружайте каждый файл по отдельности
-5️⃣ Адреса автоматически преобразуются в точки на карте
-
-🎯 **Каждый файл содержит до 2000 записей для оптимальной работы с картами**
-
-✨ **Что было сделано:**
-• Очищены адреса от номеров квартир/офисов
-• Извлечены номерные знаки в отдельную колонку
-• Добавлена геопривязка (Москва/МО)
-      `;
-
-      await bot.sendMessage(chatId, instructionMessage, { 
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true
-      });
+      await bot.sendMessage(chatId, '🎉 Все файлы отправлены! Можете загружать их в Google My Maps.');
 
     } else {
       await bot.editMessageText(`❌ Ошибка обработки: ${result.error}`, {
@@ -261,10 +248,8 @@ async function handleDocument(chatId, document) {
     
     if (error.message.includes('timeout')) {
       errorMessage = '❌ Превышено время ожидания. Попробуйте файл меньшего размера.';
-    } else if (error.message.includes('500')) {
-      errorMessage = '❌ Ошибка сервера обработки. Попробуйте позже или используйте другой файл.';
-    } else if (error.message.includes('maxContentLength')) {
-      errorMessage = '❌ Файл слишком большой для обработки. Максимальный размер: 5MB';
+    } else if (error.message.includes('Apps Script')) {
+      errorMessage = `❌ ${error.message}`;
     }
     
     await bot.sendMessage(chatId, errorMessage);
@@ -274,11 +259,7 @@ async function handleDocument(chatId, document) {
 // Обработчик других сообщений
 async function handleMessage(chatId, text) {
   if (text && !text.startsWith('/')) {
-    await bot.sendMessage(chatId, 
-      '📎 Отправьте файл для обработки (CSV или Excel)\n\n' +
-      '⚠️ Максимальный размер: 5MB\n' +
-      '💡 Для больших файлов используйте CSV формат'
-    );
+    await bot.sendMessage(chatId, '📎 Отправьте файл для обработки (CSV или Excel)\n\n⚠️ Максимальный размер: 20MB');
   }
 }
 
@@ -310,7 +291,7 @@ app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
     res.status(200).send('OK');
   } catch (error) {
     console.error('Webhook error:', error);
-    res.status(200).send('OK'); // Всегда возвращаем 200, чтобы Telegram не повторял запрос
+    res.status(200).send('OK');
   }
 });
 
@@ -321,43 +302,19 @@ app.get('/', (req, res) => {
     <html>
     <head>
       <title>Rozysk Avto Bot</title>
-      <meta charset="UTF-8">
       <style>
-        body { 
-          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-          margin: 0; 
-          padding: 50px; 
-          text-align: center; 
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white;
-          min-height: 100vh;
-        }
-        .container { 
-          background: rgba(255,255,255,0.1); 
-          border-radius: 20px; 
-          padding: 40px; 
-          backdrop-filter: blur(10px);
-          max-width: 600px;
-          margin: 0 auto;
-        }
-        .status { color: #4CAF50; font-size: 24px; margin: 20px 0; }
-        .info { margin-top: 30px; font-size: 16px; }
-        .info a { color: #FFD700; text-decoration: none; }
-        .info a:hover { text-decoration: underline; }
-        .icon { font-size: 48px; margin-bottom: 20px; }
+        body { font-family: Arial, sans-serif; margin: 50px; text-align: center; }
+        .status { color: green; font-size: 24px; }
+        .info { color: #666; margin-top: 20px; }
       </style>
     </head>
     <body>
-      <div class="container">
-        <div class="icon">🚗</div>
-        <h1>Rozysk Avto Bot</h1>
-        <div class="status">✅ Сервис работает!</div>
-        <div class="info">
-          <p>🤖 Перейдите в Telegram: <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
-          <p>🔗 Webhook: Активен</p>
-          <p>⚡ Максимальный размер файла: 5MB</p>
-          <p>📊 Поддерживаемые форматы: CSV, Excel</p>
-        </div>
+      <h1>🚗 Rozysk Avto Bot</h1>
+      <div class="status">✅ Сервис работает!</div>
+      <div class="info">
+        <p>Перейдите в Telegram: <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
+        <p>Webhook URL: ${WEBHOOK_URL}</p>
+        <p>Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}</p>
       </div>
     </body>
     </html>
@@ -369,8 +326,11 @@ app.get('/doget', (req, res) => {
     status: 'ok', 
     message: 'Rozysk Avto Bot server is running',
     webhook: WEBHOOK_URL,
-    maxFileSize: formatFileSize(MAX_FILE_SIZE),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    limits: {
+      maxFileSize: `${MAX_FILE_SIZE / 1024 / 1024}MB`,
+      maxBase64Size: `${MAX_BASE64_SIZE / 1024 / 1024}MB`
+    }
   });
 });
 
@@ -378,15 +338,6 @@ app.post('/dopost', (req, res) => {
   res.json({ 
     status: 'ok', 
     received: req.body,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy',
-    service: 'rozysk-avto-bot',
     timestamp: new Date().toISOString()
   });
 });
@@ -414,20 +365,11 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-// Обработка необработанных исключений
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
 // Запуск сервера
 app.listen(port, async () => {
   console.log(`🚀 Server running on port ${port}`);
   console.log(`📡 Webhook URL: ${WEBHOOK_URL}`);
-  console.log(`📁 Max file size: ${formatFileSize(MAX_FILE_SIZE)}`);
+  console.log(`📏 Limits: File ${MAX_FILE_SIZE/1024/1024}MB, Base64 ${MAX_BASE64_SIZE/1024/1024}MB`);
   
   // Устанавливаем webhook
   await setupWebhook();
