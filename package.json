@@ -5,16 +5,15 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
+    "node-telegram-bot-api": "^0.61.0",
+    "multer": "^1.4.5-lts.1",
     "axios": "^1.6.0"
   },
   "engines": {
-    "node": "20.x"
-  },
-  "keywords": ["telegram", "bot", "car", "search"],
-  "author": "Your Name",
-  "license": "MIT"
+    "node": ">=16.0.0"
+  }
 }
