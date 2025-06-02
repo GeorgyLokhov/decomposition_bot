@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
 // URL вашего Google Apps Script веб-приложения
-const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxI8dkjhlh5n0EmFdJ06P8lbHIdYghGRwViIljZbIS5ZOoskIiHrvaKqWXLSkm7d0-7Ng/exec';
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzqr3LZM60Rr4PmNlEBe6F9H-XEQ5edRQ8LuNmjrgpR7BNjt1-0fwACfg8uhDsqMWTW/exec';
 
 app.post('/webhook', async (req, res) => {
   try {
