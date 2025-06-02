@@ -1,24 +1,31 @@
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
-const multer = require('multer');
 const axios = require('axios');
-const FormData = require('form-data');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 10000;
 
 // Конфигурация
-const BOT_TOKEN = process.env.BOT_TOKEN; // Добавим в секреты Render
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL; // URL из Apps Script
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
+const WEBHOOK_URL = process.env.WEBHOOK_URL || `https://rozysk-avto-bot.onrender.com/webhook/${BOT_TOKEN}`;
 
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+// Создаем бота БЕЗ polling для продакшена
+const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
 // Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Хранилище состояний пользователей
-const userStates = new Map();
+// Устанавливаем webhook
+async function setupWebhook() {
+  try {
+    await bot.setWebHook(WEBHOOK_URL);
+    console.log('✅ Webhook установлен:', WEBHOOK_URL);
+  } catch (error) {
+    console.error('❌ Ошибка установки webhook:', error);
+  }
+}
 
 // Определяем тип файла
 function getFileType(filename) {
@@ -34,9 +41,12 @@ function isSupportedFile(filename) {
 }
 
 // Конвертируем файл в base64
-async function fileToBase64(fileUrl, filename) {
+async function fileToBase64(fileUrl) {
   try {
-    const response = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+    const response = await axios.get(fileUrl, { 
+      responseType: 'arraybuffer',
+      timeout: 30000
+    });
     const base64 = Buffer.from(response.data).toString('base64');
     return base64;
   } catch (error) {
@@ -56,7 +66,8 @@ async function processFileInAppsScript(fileContent, fileName, fileType) {
     }, {
       headers: {
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: 60000
     });
 
     return response.data;
@@ -66,17 +77,8 @@ async function processFileInAppsScript(fileContent, fileName, fileType) {
   }
 }
 
-// Очищаем возможные webhook
-bot.deleteWebhook().then(() => {
-  console.log('Webhook cleared successfully');
-}).catch((err) => {
-  console.log('Webhook clear error:', err.message);
-});
-
-// Команда /start
-bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-  
+// Обработчик команды /start
+async function handleStart(chatId) {
   const welcomeMessage = `
 🚗 **Добро пожаловать в Rozysk Avto Bot!**
 
@@ -95,19 +97,17 @@ bot.onText(/\/start/, (msg) => {
 📤 **Просто отправьте мне файл для обработки!**
   `;
   
-  bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
-});
+  await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
+}
 
-// Обработка документов
-bot.on('document', async (msg) => {
-  const chatId = msg.chat.id;
-  const document = msg.document;
+// Обработчик документов
+async function handleDocument(chatId, document) {
   const fileName = document.file_name;
 
   try {
     // Проверяем формат файла
     if (!isSupportedFile(fileName)) {
-      bot.sendMessage(chatId, '❌ Поддерживаются только файлы: CSV, Excel (.xlsx, .xls)');
+      await bot.sendMessage(chatId, '❌ Поддерживаются только файлы: CSV, Excel (.xlsx, .xls)');
       return;
     }
 
@@ -119,11 +119,11 @@ bot.on('document', async (msg) => {
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fileInfo.file_path}`;
 
     // Конвертируем в base64
-    const fileContent = await fileToBase64(fileUrl, fileName);
+    const fileContent = await fileToBase64(fileUrl);
     const fileType = getFileType(fileName);
 
     // Отправляем на обработку в Apps Script
-    bot.editMessageText('🔄 Обрабатываю данные в облаке...', {
+    await bot.editMessageText('🔄 Обрабатываю данные в облаке...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
@@ -132,7 +132,7 @@ bot.on('document', async (msg) => {
 
     if (result.success) {
       // Удаляем сообщение о обработке
-      bot.deleteMessage(chatId, processingMsg.message_id);
+      await bot.deleteMessage(chatId, processingMsg.message_id);
 
       // Отправляем информацию о результате
       const resultMessage = `
@@ -180,7 +180,7 @@ bot.on('document', async (msg) => {
       await bot.sendMessage(chatId, '🎉 Все файлы отправлены! Можете загружать их в Google My Maps.');
 
     } else {
-      bot.editMessageText(`❌ Ошибка обработки: ${result.error}`, {
+      await bot.editMessageText(`❌ Ошибка обработки: ${result.error}`, {
         chat_id: chatId,
         message_id: processingMsg.message_id
       });
@@ -188,53 +188,119 @@ bot.on('document', async (msg) => {
 
   } catch (error) {
     console.error('Error processing document:', error);
-    bot.sendMessage(chatId, `❌ Произошла ошибка: ${error.message}`);
+    await bot.sendMessage(chatId, `❌ Произошла ошибка: ${error.message}`);
+  }
+}
+
+// Обработчик других сообщений
+async function handleMessage(chatId, text) {
+  if (text && !text.startsWith('/')) {
+    await bot.sendMessage(chatId, '📎 Отправьте файл для обработки (CSV или Excel)');
+  }
+}
+
+// Webhook endpoint для получения обновлений от Telegram
+app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
+  try {
+    const update = req.body;
+    
+    if (update.message) {
+      const chatId = update.message.chat.id;
+      const message = update.message;
+
+      // Обработка команд
+      if (message.text === '/start') {
+        await handleStart(chatId);
+      }
+      // Обработка документов
+      else if (message.document) {
+        await handleDocument(chatId, message.document);
+      }
+      // Обработка текстовых сообщений
+      else if (message.text) {
+        await handleMessage(chatId, message.text);
+      }
+    }
+
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('Webhook error:', error);
+    res.status(200).send('OK');
   }
 });
 
-// Обработка других типов сообщений
-bot.on('message', (msg) => {
-  const chatId = msg.chat.id;
-  
-  if (msg.text && !msg.text.startsWith('/')) {
-    bot.sendMessage(chatId, '📎 Отправьте файл для обработки (CSV или Excel)');
-  }
-});
-
-// Обработка ошибок бота
-bot.on('error', (error) => {
-  console.error('Telegram bot error:', error);
-});
-
-// Express routes
+// Основные routes
 app.get('/', (req, res) => {
-  res.send('Rozysk Avto Bot is running!');
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Rozysk Avto Bot</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 50px; text-align: center; }
+        .status { color: green; font-size: 24px; }
+        .info { color: #666; margin-top: 20px; }
+      </style>
+    </head>
+    <body>
+      <h1>🚗 Rozysk Avto Bot</h1>
+      <div class="status">✅ Сервис работает!</div>
+      <div class="info">
+        <p>Перейдите в Telegram: <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
+        <p>Webhook URL: ${WEBHOOK_URL}</p>
+      </div>
+    </body>
+    </html>
+  `);
 });
 
 app.get('/doget', (req, res) => {
-  res.json({ status: 'ok', message: 'Rozysk Avto Bot server is running' });
+  res.json({ 
+    status: 'ok', 
+    message: 'Rozysk Avto Bot server is running',
+    webhook: WEBHOOK_URL,
+    timestamp: new Date().toISOString()
+  });
 });
 
 app.post('/dopost', (req, res) => {
-  res.json({ status: 'ok', received: req.body });
-});
-
-// Запуск сервера
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  console.log('Telegram bot is polling...');
+  res.json({ 
+    status: 'ok', 
+    received: req.body,
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Graceful shutdown
-process.on('SIGINT', () => {
-  console.log('Shutting down bot...');
-  bot.stopPolling();
+process.on('SIGTERM', async () => {
+  console.log('Получен SIGTERM, завершаем работу...');
+  try {
+    await bot.deleteWebHook();
+    console.log('Webhook удален');
+  } catch (error) {
+    console.error('Ошибка при удалении webhook:', error);
+  }
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
-  console.log('Shutting down bot...');
-  bot.stopPolling();  
+process.on('SIGINT', async () => {
+  console.log('Получен SIGINT, завершаем работу...');
+  try {
+    await bot.deleteWebHook();
+    console.log('Webhook удален');
+  } catch (error) {
+    console.error('Ошибка при удалении webhook:', error);
+  }
   process.exit(0);
 });
 
+// Запуск сервера
+app.listen(port, async () => {
+  console.log(`🚀 Server running on port ${port}`);
+  console.log(`📡 Webhook URL: ${WEBHOOK_URL}`);
+  
+  // Устанавливаем webhook
+  await setupWebhook();
+  
+  console.log('✅ Telegram bot is ready with webhook!');
+});
