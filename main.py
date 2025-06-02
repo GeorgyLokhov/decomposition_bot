@@ -191,7 +191,7 @@ def extract_license_plate(text):
         found_plates.extend(matches)
 
     if found_plates:
-        return found_plates[0]  # ИСПРАВЛЕНО: возвращаем первый найденный
+        return found_plates[0]
 
     text_clean = text.replace(' ', '').replace(',', ' ').split()
     if not text_clean:
@@ -222,17 +222,44 @@ def remove_license_plate(text, plate):
         return text
     return text.replace(plate, '').strip()
 
+def find_address_type_column(df: pd.DataFrame) -> Optional[str]:
+    """ИСПРАВЛЕННАЯ функция поиска столбца с типами адресов"""
+    
+    # 1. Точный поиск "ТИП АДРЕСА"
+    exact_matches = [col for col in df.columns if col.upper() == 'ТИП АДРЕСА']
+    if exact_matches:
+        logger.info(f"✅ Найден точный столбец: {exact_matches[0]}")
+        return exact_matches[0]
+    
+    # 2. Поиск столбцов содержащих И "ТИП" И "АДРЕС"
+    type_address_cols = [col for col in df.columns 
+                        if 'тип' in col.lower() and 'адрес' in col.lower()]
+    if type_address_cols:
+        logger.info(f"✅ Найден столбец с типом адреса: {type_address_cols[0]}")
+        return type_address_cols[0]
+    
+    # 3. Поиск столбцов содержащих только "ТИП" (но НЕ просто "АДРЕС")
+    type_cols = [col for col in df.columns 
+                if 'тип' in col.lower() and col.upper() != 'АДРЕС']
+    if type_cols:
+        logger.info(f"✅ Найден столбец с типом: {type_cols[0]}")
+        return type_cols[0]
+    
+    # 4. Если ничего не найдено
+    logger.warning("❌ Столбец с типами адресов не найден")
+    logger.info(f"Доступные столбцы: {list(df.columns)}")
+    return None
+
 async def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Обработка DataFrame с очисткой адресов и извлечением номеров"""
     
     logger.info(f"Начинаем обработку DataFrame с {len(df)} записями")
     
     # 1. Фильтрация по региону (Москва и Подмосковье)
-    address_cols = [col for col in df.columns if any(word in col.lower() 
-                   for word in ['адрес', 'address'])]
+    address_cols = [col for col in df.columns if 'адрес' in col.lower() and 'тип' not in col.lower()]
     
     if address_cols:
-        address_col = address_cols[0]  # ИСПРАВЛЕНО: берем первый столбец
+        address_col = address_cols[0]
         logger.info(f"Найден столбец с адресами: {address_col}")
         
         # Фильтруем только записи из Москвы и Подмосковья
@@ -392,6 +419,7 @@ async def handle_file(message: types.Message, state: FSMContext):
             df = pd.read_excel(BytesIO(file_bytes))
         
         logger.info(f"Файл загружен, строк: {len(df)}, столбцов: {len(df.columns)}")
+        logger.info(f"Столбцы в файле: {list(df.columns)}")
         
         # Очищаем память от данных файла
         del file_bytes
@@ -451,18 +479,15 @@ async def add_filters_callback(callback: types.CallbackQuery, state: FSMContext)
     
     df = user_data[user_id]['df_original']
     
-    # Проверяем доступные столбцы для фильтрации
-    # ИСПРАВЛЕНО: правильный поиск столбца "ТИП АДРЕСА"
-    address_type_cols = [col for col in df.columns if 'тип' in col.lower() and 'адрес' in col.lower()]
-    if not address_type_cols:
-        address_type_cols = [col for col in df.columns if 'тип' in col.lower()]
+    # ИСПРАВЛЕННЫЙ поиск столбца "ТИП АДРЕСА"
+    address_type_col = find_address_type_column(df)
     
     auto_flag_cols = [col for col in df.columns if any(word in col.lower() 
                      for word in ['флаг', 'новый', 'flag', 'new'])]
     
     buttons = []
     
-    if address_type_cols:
+    if address_type_col:
         buttons.append([InlineKeyboardButton(
             text="📍 Фильтр по типам адресов", 
             callback_data="filter_address_types"
@@ -509,19 +534,16 @@ async def filter_address_types_callback(callback: types.CallbackQuery, state: FS
     df = user_data[user_id]['df_original']
     
     # ИСПРАВЛЕННЫЙ поиск столбца "ТИП АДРЕСА"
-    address_type_cols = [col for col in df.columns if 'тип' in col.lower() and 'адрес' in col.lower()]
-    if not address_type_cols:
-        address_type_cols = [col for col in df.columns if 'тип' in col.lower()]
+    address_type_col = find_address_type_column(df)
     
-    if not address_type_cols:
+    if not address_type_col:
         available_cols = list(df.columns)
         await callback.message.edit_text(
             f"❌ Столбец с типами адресов не найден!\n\n"
-            f"Доступные столбцы:\n" + "\n".join(f"• {col}" for col in available_cols[:10])
+            f"Доступные столбцы:\n" + "\n".join(f"• {col}" for col in available_cols)
         )
         return
     
-    address_type_col = address_type_cols[0]
     unique_types = get_unique_values(df, address_type_col)
     
     if not unique_types:
@@ -535,6 +557,7 @@ async def filter_address_types_callback(callback: types.CallbackQuery, state: FS
         f"📍 **Выберите типы адресов:**\n\n"
         f"Столбец: `{address_type_col}`\n"
         f"Доступно вариантов: {len(unique_types)}\n\n"
+        f"Варианты: {', '.join(unique_types[:5])}{'...' if len(unique_types) > 5 else ''}\n\n"
         f"Нажмите на варианты для выбора/отмены:",
         reply_markup=keyboard,
         parse_mode='Markdown'
@@ -563,16 +586,12 @@ async def toggle_address_type(callback: types.CallbackQuery, state: FSMContext):
     
     # Обновляем клавиатуру
     df = user_data[user_id]['df_original']
-    address_type_cols = [col for col in df.columns if 'тип' in col.lower() and 'адрес' in col.lower()]
-    if not address_type_cols:
-        address_type_cols = [col for col in df.columns if 'тип' in col.lower()]
+    address_type_col = find_address_type_column(df)
     
-    address_type_col = address_type_cols[0]
-    unique_types = get_unique_values(df, address_type_col)
-    
-    keyboard = create_filter_keyboard(unique_types, selected, "addr_type")
-    
-    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    if address_type_col:
+        unique_types = get_unique_values(df, address_type_col)
+        keyboard = create_filter_keyboard(unique_types, selected, "addr_type")
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
 
 @dp.callback_query(F.data == "filter_auto_flags")
 async def filter_auto_flags_callback(callback: types.CallbackQuery, state: FSMContext):
@@ -665,13 +684,9 @@ async def apply_filters_callback(callback: types.CallbackQuery, state: FSMContex
     
     # Применяем фильтры
     if selected_addr_types:
-        address_type_cols = [col for col in df.columns if 'тип' in col.lower() and 'адрес' in col.lower()]
-        if not address_type_cols:
-            address_type_cols = [col for col in df.columns if 'тип' in col.lower()]
-        
-        if address_type_cols:
-            addr_col = address_type_cols[0]
-            df = df[df[addr_col].isin(selected_addr_types)]
+        address_type_col = find_address_type_column(df)
+        if address_type_col:
+            df = df[df[address_type_col].isin(selected_addr_types)]
     
     if selected_auto_flags:
         flag_cols = [col for col in df.columns if any(word in col.lower() 
