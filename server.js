@@ -224,3 +224,17 @@ app.listen(port, () => {
   console.log(`Server running on port ${port}`);
   console.log('Telegram bot is polling...');
 });
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('Shutting down bot...');
+  bot.stopPolling();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('Shutting down bot...');
+  bot.stopPolling();  
+  process.exit(0);
+});
+
