@@ -1,7 +1,7 @@
 {
   "name": "rozysk-avto-bot",
-  "version": "1.0.0",
-  "description": "Telegram bot for processing car search files",
+  "version": "2.0.0",
+  "description": "Telegram bot for processing car search files with filters",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -16,7 +16,7 @@
   "engines": {
     "node": "20.x"
   },
-  "keywords": ["telegram", "bot", "csv", "excel", "processing"],
+  "keywords": ["telegram", "bot", "csv", "excel", "processing", "filters"],
   "author": "GeorgyLokhov",
   "license": "MIT"
 }
