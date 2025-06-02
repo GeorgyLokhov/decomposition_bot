@@ -168,7 +168,7 @@ function isAddressInMoscowRegion(address) {
   return false;
 }
 
-// НОВАЯ ФУНКЦИЯ: Улучшенная фильтрация по регионам
+// НОВАЯ ФУНКЦИЯ: Улучшенная фильтрация по регионам с сохранением исключенных
 function filterByRegion(csvContent) {
   const lines = csvContent.split(/\r\n|\n|\r/);
   const headers = lines[0];
@@ -196,10 +196,15 @@ function filterByRegion(csvContent) {
   
   if (addressIndex === -1) {
     console.log('No address/region column found, returning original data');
-    return csvContent;
+    return {
+      filteredContent: csvContent,
+      excludedRows: [],
+      excludedCount: 0
+    };
   }
   
   const filteredLines = [headers];
+  const excludedRows = [];
   let filteredCount = 0;
   let totalCount = 0;
   
@@ -214,12 +219,42 @@ function filterByRegion(csvContent) {
       filteredLines.push(lines[i]);
       filteredCount++;
     } else {
+      // Сохраняем исключенную строку с причиной
+      excludedRows.push({
+        rowNumber: totalCount,
+        address: addressValue,
+        fullRow: lines[i],
+        reason: getExclusionReason(addressValue)
+      });
       console.log(`Filtered out: ${addressValue}`);
     }
   }
   
   console.log(`Regional filtering: ${totalCount} -> ${filteredCount} rows (removed ${totalCount - filteredCount})`);
-  return filteredLines.join('\n');
+  
+  return {
+    filteredContent: filteredLines.join('\n'),
+    excludedRows: excludedRows,
+    excludedCount: excludedRows.length
+  };
+}
+
+// НОВАЯ ФУНКЦИЯ: Определение причины исключения
+function getExclusionReason(address) {
+  if (!address || typeof address !== 'string') {
+    return 'Пустой адрес';
+  }
+  
+  const normalizedAddress = address.toLowerCase().trim();
+  
+  // Проверяем запрещенные регионы
+  for (const forbidden of FORBIDDEN_REGIONS) {
+    if (normalizedAddress.includes(forbidden)) {
+      return `Дальний регион: ${forbidden}`;
+    }
+  }
+  
+  return 'Не определен как Москва/Подмосковье';
 }
 
 // Парсим CSV и извлекаем уникальные значения
@@ -337,6 +372,59 @@ function applyFilters(csvContent, selectedAddressTypes, selectedCarAges, columnI
   
   console.log(`Applied filters: ${lines.length - 1} -> ${filteredLines.length - 1} rows`);
   return filteredLines.join('\n');
+}
+
+// НОВАЯ ФУНКЦИЯ: Создание отчета об исключенных данных
+function createExcludedDataReport(excludedRows) {
+  if (excludedRows.length === 0) {
+    return 'Нет исключенных записей.';
+  }
+  
+  let report = `📋 **Отчет об исключенных записях (${excludedRows.length} шт.)**\n\n`;
+  
+  // Группируем по причинам
+  const groupedByReason = {};
+  excludedRows.forEach(row => {
+    if (!groupedByReason[row.reason]) {
+      groupedByReason[row.reason] = [];
+    }
+    groupedByReason[row.reason].push(row);
+  });
+  
+  // Формируем отчет по группам
+  Object.keys(groupedByReason).forEach(reason => {
+    const rows = groupedByReason[reason];
+    report += `🚫 **${reason}** (${rows.length} записей):\n`;
+    
+    rows.slice(0, 10).forEach((row, index) => { // Показываем только первые 10
+      report += `${index + 1}. ${row.address}\n`;
+    });
+    
+    if (rows.length > 10) {
+      report += `... и еще ${rows.length - 10} записей\n`;
+    }
+    
+    report += '\n';
+  });
+  
+  return report;
+}
+
+// НОВАЯ ФУНКЦИЯ: Создание CSV файла с исключенными данными
+function createExcludedDataCSV(excludedRows) {
+  if (excludedRows.length === 0) {
+    return null;
+  }
+  
+  let csvContent = 'Номер строки,Адрес,Причина исключения\n';
+  
+  excludedRows.forEach(row => {
+    const escapedAddress = row.address.replace(/"/g, '""');
+    const escapedReason = row.reason.replace(/"/g, '""');
+    csvContent += `${row.rowNumber},"${escapedAddress}","${escapedReason}"\n`;
+  });
+  
+  return csvContent;
 }
 
 // Отправляем CSV на обработку в Apps Script
@@ -472,7 +560,7 @@ async function handleStart(chatId) {
   userData.delete(chatId);
   
   const welcomeMessage = `
-🚗 **Добро пожаловать в Rozysk Avto Bot v6.1!**
+🚗 **Добро пожаловать в Rozysk Avto Bot v6.2!**
 
 Этот бот поможет вам обработать файлы для розыска автомобилей:
 
@@ -488,16 +576,16 @@ async function handleStart(chatId) {
 • Фильтр по возрасту автомобилей
 • Возможность работы без фильтров
 
+🔍 **Новое в v6.2:**
+• **Просмотр исключенных данных** - можете посмотреть, что именно было отфильтровано
+• Отчет с причинами исключения
+• Экспорт исключенных данных в CSV
+
 📎 **Поддерживаемые форматы:**
 • CSV (.csv)
 • Excel (.xlsx, .xls)
 
 📤 **Просто отправьте мне файл для обработки!**
-
-🔧 **v6.1 - Улучшения:**
-• Более точная фильтрация регионов
-• Анализ адресов вместо только колонки "регион"
-• Исключение явно дальних городов
   `;
   
   await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
@@ -554,9 +642,8 @@ async function handleDocument(chatId, document) {
     // Подсчитываем строки до фильтрации
     const originalRowCount = csvContent.split('\n').length - 1;
 
-    // Фильтруем по регионам
-    const filteredByCityContent = filterByRegion(csvContent);
-    const filteredRowCount = filteredByCityContent.split('\n').length - 1;
+    // Фильтруем по регионам и сохраняем исключенные данные
+    const filterResult = filterByRegion(csvContent);
 
     await bot.editMessageText('📊 Анализирую данные для фильтров...', {
       chat_id: chatId,
@@ -564,13 +651,14 @@ async function handleDocument(chatId, document) {
     });
 
     // Извлекаем уникальные значения
-    const columnInfo = parseCSVAndExtractValues(filteredByCityContent);
+    const columnInfo = parseCSVAndExtractValues(filterResult.filteredContent);
 
     // Сохраняем данные пользователя
     userData.set(chatId, {
       fileName,
       originalCsvContent: csvContent,
-      filteredCsvContent: filteredByCityContent,
+      filteredCsvContent: filterResult.filteredContent,
+      excludedRows: filterResult.excludedRows,
       columnInfo,
       selectedAddressTypes: [],
       selectedCarAges: []
@@ -584,9 +672,14 @@ async function handleDocument(chatId, document) {
         [
           { text: '🎯 Настроить фильтры', callback_data: 'setup_filters' },
           { text: '📤 Без фильтров', callback_data: 'no_filters' }
+        ],
+        [
+          { text: '🔍 Показать исключенные', callback_data: 'show_excluded' }
         ]
       ]
     };
+
+    const filteredRowCount = filterResult.filteredContent.split('\n').length - 1;
 
     await bot.sendMessage(chatId, `
 ✅ **Файл загружен и обработан!**
@@ -594,7 +687,7 @@ async function handleDocument(chatId, document) {
 📊 **Статистика фильтрации по регионам:**
 • Исходных строк: ${originalRowCount}
 • После фильтрации: ${filteredRowCount}
-• Исключено дальних регионов: ${originalRowCount - filteredRowCount}
+• Исключено дальних регионов: ${filterResult.excludedCount}
 
 🎯 **Дополнительные фильтры:**
 • Найдено типов адресов: ${columnInfo.addressTypes.length}
@@ -632,7 +725,44 @@ async function handleCallbackQuery(query) {
       return;
     }
 
-    if (data === 'no_filters') {
+    if (data === 'show_excluded') {
+      // Показать исключенные данные
+      if (userInfo.excludedRows && userInfo.excludedRows.length > 0) {
+        const report = createExcludedDataReport(userInfo.excludedRows);
+        
+        // Отправляем отчет
+        await bot.sendMessage(chatId, report, { parse_mode: 'Markdown' });
+        
+        // Создаем и отправляем CSV с исключенными данными
+        const excludedCSV = createExcludedDataCSV(userInfo.excludedRows);
+        if (excludedCSV) {
+          const buffer = Buffer.from(excludedCSV, 'utf8');
+          await sendDocumentSafe(chatId, buffer, 'исключенные_записи.csv');
+        }
+        
+        // Возвращаем кнопки выбора
+        const filterKeyboard = {
+          inline_keyboard: [
+            [
+              { text: '🎯 Настроить фильтры', callback_data: 'setup_filters' },
+              { text: '📤 Без фильтров', callback_data: 'no_filters' }
+            ],
+            [
+              { text: '🔍 Показать исключенные', callback_data: 'show_excluded' }
+            ]
+          ]
+        };
+        
+        await bot.sendMessage(chatId, '🎯 **Выберите действие:**', { 
+          parse_mode: 'Markdown',
+          reply_markup: filterKeyboard
+        });
+        
+      } else {
+        await bot.answerCallbackQuery(query.id, { text: 'Нет исключенных записей' });
+      }
+      
+    } else if (data === 'no_filters') {
       // Обработка без фильтров
       await processAndSendFiles(chatId, userInfo.filteredCsvContent, userInfo.fileName, messageId);
       
@@ -670,6 +800,9 @@ async function handleCallbackQuery(query) {
           [
             { text: '🎯 Настроить фильтры', callback_data: 'setup_filters' },
             { text: '📤 Без фильтров', callback_data: 'no_filters' }
+          ],
+          [
+            { text: '🔍 Показать исключенные', callback_data: 'show_excluded' }
           ]
         ]
       };
@@ -753,6 +886,9 @@ async function handleCallbackQuery(query) {
           [
             { text: '🎯 Настроить фильтры', callback_data: 'setup_filters' },
             { text: '📤 Без фильтров', callback_data: 'no_filters' }
+          ],
+          [
+            { text: '🔍 Показать исключенные', callback_data: 'show_excluded' }
           ]
         ]
       };
@@ -880,11 +1016,12 @@ async function processAndSendFiles(chatId, csvContent, fileName, messageId, with
         }
       }
 
-      // Кнопка для повторного выбора фильтров
+      // Кнопки для повторного выбора фильтров и просмотра исключенных
       const reselectionKeyboard = {
         inline_keyboard: [
           [
-            { text: '🔄 Перевыбрать фильтры', callback_data: 'reselect_filters' }
+            { text: '🔄 Перевыбрать фильтры', callback_data: 'reselect_filters' },
+            { text: '🔍 Показать исключенные', callback_data: 'show_excluded' }
           ]
         ]
       };
@@ -948,7 +1085,7 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Rozysk Avto Bot v6.1</title>
+      <title>Rozysk Avto Bot v6.2</title>
       <style>
         body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #f0f0f0; }
         .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
@@ -956,7 +1093,7 @@ app.get('/', (req, res) => {
         .info { color: #666; margin-top: 20px; line-height: 1.6; }
         .version { background: #e3f2fd; padding: 15px; border-radius: 5px; margin: 20px 0; }
         .features { background: #f3e5f5; padding: 15px; border-radius: 5px; margin: 10px 0; }
-        .fix { background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 10px 0; }
+        .new { background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 10px 0; }
       </style>
     </head>
     <body>
@@ -964,18 +1101,18 @@ app.get('/', (req, res) => {
         <h1>🚗 Rozysk Avto Bot</h1>
         <div class="status">✅ Сервис работает!</div>
         <div class="version">
-          <strong>Версия 6.1 - Улучшенная фильтрация регионов</strong><br>
+          <strong>Версия 6.2 - Контроль фильтрации</strong><br>
           • Анализ адресов вместо только колонки "регион"<br>
           • Расширенный список городов Подмосковья<br>
           • Исключение дальних регионов России и СНГ<br>
           • Интеллектуальное определение московских адресов
         </div>
-        <div class="fix">
-          <strong>🔧 Исправления v6.1:</strong><br>
-          • Исправлена фильтрация по регионам<br>
-          • Добавлено логирование отфильтрованных адресов<br>
-          • Улучшена точность определения регионов<br>
-          • Показ статистики фильтрации
+        <div class="new">
+          <strong>🔍 Новое в v6.2:</strong><br>
+          • Кнопка "Показать исключенные" - посмотреть что было отфильтровано<br>
+          • Отчет с причинами исключения записей<br>
+          • Экспорт исключенных данных в CSV файл<br>
+          • Группировка исключенных по причинам
         </div>
         <div class="features">
           <strong>🎯 Возможности:</strong><br>
@@ -983,7 +1120,8 @@ app.get('/', (req, res) => {
           • Возможность работы без фильтров<br>
           • Кнопка "Назад" на каждом шаге<br>
           • Повторный выбор фильтров<br>
-          • Автоматическая умная фильтрация по регионам
+          • Автоматическая умная фильтрация по регионам<br>
+          • Полный контроль фильтрации
         </div>
         <div class="info">
           <p><strong>Telegram:</strong> <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
@@ -999,16 +1137,17 @@ app.get('/', (req, res) => {
 app.get('/doget', (req, res) => {
   res.json({ 
     status: 'ok', 
-    message: 'Rozysk Avto Bot v6.1 with improved regional filtering',
+    message: 'Rozysk Avto Bot v6.2 with excluded data viewing',
     webhook: WEBHOOK_URL,
     timestamp: new Date().toISOString(),
     features: [
+      'View excluded data functionality',
+      'Exclusion reasons reporting',
+      'Excluded data CSV export',
       'Improved regional filtering',
-      'Address analysis instead of region column only',
-      'Extended list of Moscow region cities',
-      'Exclusion of distant regions',
+      'Address analysis',
       'Intelligent Moscow address detection',
-      'Filtering statistics display'
+      'Full filtering control'
     ]
   });
 });
@@ -1046,11 +1185,11 @@ process.on('SIGINT', async () => {
 
 // Запуск сервера
 app.listen(port, async () => {
-  console.log(`🚀 Server v6.1 running on port ${port}`);
+  console.log(`🚀 Server v6.2 running on port ${port}`);
   console.log(`📡 Webhook URL: ${WEBHOOK_URL}`);
-  console.log(`🎯 Features: Improved regional filtering, Address analysis, Smart filtering`);
+  console.log(`🔍 Features: Excluded data viewing, Regional filtering, Address analysis, Full control`);
   
   await setupWebhook();
   
-  console.log('✅ Telegram bot v6.1 with improved regional filtering is ready!');
+  console.log('✅ Telegram bot v6.2 with excluded data viewing is ready!');
 });
