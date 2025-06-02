@@ -66,6 +66,13 @@ async function processFileInAppsScript(fileContent, fileName, fileType) {
   }
 }
 
+// Очищаем возможные webhook
+bot.deleteWebhook().then(() => {
+  console.log('Webhook cleared successfully');
+}).catch((err) => {
+  console.log('Webhook clear error:', err.message);
+});
+
 // Команда /start
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
