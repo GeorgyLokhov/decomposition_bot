@@ -22,43 +22,22 @@ const bot = new TelegramBot(BOT_TOKEN, {
   }
 });
 
+// Хранилище состояний пользователей
+const userStates = new Map();
+const userFileData = new Map();
+
+// Состояния пользователя
+const STATES = {
+  IDLE: 'idle',
+  WAITING_FILTER_CHOICE: 'waiting_filter_choice',
+  SELECTING_ADDRESS_TYPE: 'selecting_address_type',
+  SELECTING_CAR_TYPE: 'selecting_car_type',
+  READY_TO_PROCESS: 'ready_to_process'
+};
+
 // Middleware
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
-// Хранилище состояний пользователей
-const userStates = new Map();
-
-// Состояния диалога
-const STATES = {
-  WAITING_FILE: 'waiting_file',
-  ASKING_FILTERS: 'asking_filters',
-  SELECTING_ADDRESS_TYPES: 'selecting_address_types',
-  SELECTING_CAR_TYPES: 'selecting_car_types',
-  FILES_SENT: 'files_sent'
-};
-
-// Инициализация состояния пользователя
-function initUserState(chatId) {
-  userStates.set(chatId, {
-    state: STATES.WAITING_FILE,
-    csvContent: null,
-    fileName: null,
-    availableAddressTypes: [],
-    availableCarTypes: [],
-    selectedAddressTypes: new Set(),
-    selectedCarTypes: new Set(),
-    processedData: null
-  });
-}
-
-// Получение состояния пользователя
-function getUserState(chatId) {
-  if (!userStates.has(chatId)) {
-    initUserState(chatId);
-  }
-  return userStates.get(chatId);
-}
 
 // Устанавливаем webhook
 async function setupWebhook() {
@@ -67,6 +46,21 @@ async function setupWebhook() {
     console.log('✅ Webhook установлен:', WEBHOOK_URL);
   } catch (error) {
     console.error('❌ Ошибка установки webhook:', error);
+  }
+}
+
+// Инициализация состояния пользователя
+function initUserState(userId) {
+  if (!userStates.has(userId)) {
+    userStates.set(userId, {
+      state: STATES.IDLE,
+      selectedAddressTypes: new Set(),
+      selectedCarTypes: new Set(),
+      availableAddressTypes: [],
+      availableCarTypes: [],
+      fileName: '',
+      csvContent: ''
+    });
   }
 }
 
@@ -83,7 +77,7 @@ function isSupportedFile(filename) {
   return supportedTypes.includes(fileType);
 }
 
-// Конвертация Excel в CSV на сервере
+// Конвертируем Excel в CSV на сервере
 function convertExcelToCSV(buffer, fileName) {
   try {
     console.log('Converting Excel to CSV on server...');
@@ -102,32 +96,52 @@ function convertExcelToCSV(buffer, fileName) {
   }
 }
 
-// Получение уникальных значений из CSV
-function getUniqueValues(csvContent, columnName) {
+// Получаем уникальные значения из CSV для фильтров
+function getUniqueValues(csvContent) {
   try {
     const lines = csvContent.split('\n');
+    if (lines.length < 2) return { addressTypes: [], carTypes: [] };
+    
     const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
-    const columnIndex = headers.findIndex(h => h.toLowerCase().includes(columnName.toLowerCase()));
     
-    if (columnIndex === -1) return [];
+    // Ищем индексы нужных колонок
+    const addressTypeIndex = headers.findIndex(h => 
+      h.toLowerCase().includes('тип адреса') || h.toLowerCase().includes('address')
+    );
+    const carTypeIndex = headers.findIndex(h => 
+      h.toLowerCase().includes('флаг') || h.toLowerCase().includes('авто')
+    );
     
-    const uniqueValues = new Set();
+    const addressTypes = new Set();
+    const carTypes = new Set();
+    
+    // Парсим данные
     for (let i = 1; i < lines.length; i++) {
-      const cells = lines[i].split(',');
-      if (cells[columnIndex]) {
-        const value = cells[columnIndex].trim().replace(/"/g, '');
-        if (value) uniqueValues.add(value);
+      if (lines[i].trim() === '') continue;
+      
+      const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+      
+      if (addressTypeIndex !== -1 && values[addressTypeIndex]) {
+        addressTypes.add(values[addressTypeIndex]);
+      }
+      
+      if (carTypeIndex !== -1 && values[carTypeIndex]) {
+        carTypes.add(values[carTypeIndex]);
       }
     }
     
-    return Array.from(uniqueValues).slice(0, 20); // Ограничиваем 20 значениями
+    return {
+      addressTypes: Array.from(addressTypes).filter(Boolean),
+      carTypes: Array.from(carTypes).filter(Boolean)
+    };
+    
   } catch (error) {
-    console.error('Error getting unique values:', error);
-    return [];
+    console.error('Error parsing CSV for unique values:', error);
+    return { addressTypes: [], carTypes: [] };
   }
 }
 
-// Отправка CSV на обработку в Apps Script
+// Отправляем CSV на обработку в Apps Script
 async function processCSVInAppsScript(csvContent, fileName, filters = null) {
   try {
     console.log(`Sending CSV to Apps Script: ${fileName}, length: ${csvContent.length}`);
@@ -140,6 +154,7 @@ async function processCSVInAppsScript(csvContent, fileName, filters = null) {
       fileName: fileName
     };
     
+    // Добавляем фильтры если они есть
     if (filters) {
       requestData.filters = filters;
     }
@@ -159,27 +174,34 @@ async function processCSVInAppsScript(csvContent, fileName, filters = null) {
   }
 }
 
-// Создание кнопок для выбора фильтров
-function createFilterKeyboard(options, selected, backButton = true) {
+// Создаем клавиатуру для выбора фильтров
+function createFilterKeyboard() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '✅ Да, нужны фильтры', callback_data: 'filter_yes' }],
+        [{ text: '❌ Нет, без фильтров', callback_data: 'filter_no' }]
+      ]
+    }
+  };
+}
+
+// Создаем клавиатуру для выбора типов адресов
+function createAddressTypeKeyboard(availableTypes, selectedTypes) {
   const keyboard = [];
   
-  // Создаем кнопки по 2 в ряду
-  for (let i = 0; i < options.length; i += 2) {
+  // Группируем по 2 кнопки в ряд
+  for (let i = 0; i < availableTypes.length; i += 2) {
     const row = [];
     
-    const option1 = options[i];
-    const isSelected1 = selected.has(option1);
-    row.push({
-      text: `${isSelected1 ? '✅' : '☐'} ${option1}`,
-      callback_data: `toggle_${i}`
-    });
-    
-    if (i + 1 < options.length) {
-      const option2 = options[i + 1];
-      const isSelected2 = selected.has(option2);
+    for (let j = i; j < Math.min(i + 2, availableTypes.length); j++) {
+      const type = availableTypes[j];
+      const isSelected = selectedTypes.has(type);
+      const text = isSelected ? `✅ ${type}` : `⬜ ${type}`;
+      
       row.push({
-        text: `${isSelected2 ? '✅' : '☐'} ${option2}`,
-        callback_data: `toggle_${i + 1}`
+        text: text,
+        callback_data: `addr_${j}`
       });
     }
     
@@ -187,17 +209,43 @@ function createFilterKeyboard(options, selected, backButton = true) {
   }
   
   // Кнопки управления
-  const controlRow = [];
-  if (backButton) {
-    controlRow.push({ text: '◀️ Назад', callback_data: 'back' });
-  }
-  controlRow.push({ text: '➡️ Далее', callback_data: 'next' });
+  keyboard.push([
+    { text: '➡️ Далее к выбору авто', callback_data: 'addr_next' },
+    { text: '🔙 Назад', callback_data: 'addr_back' }
+  ]);
   
-  if (controlRow.length > 0) {
-    keyboard.push(controlRow);
+  return { reply_markup: { inline_keyboard: keyboard } };
+}
+
+// Создаем клавиатуру для выбора типов авто
+function createCarTypeKeyboard(availableTypes, selectedTypes) {
+  const keyboard = [];
+  
+  // Группируем по 2 кнопки в ряд
+  for (let i = 0; i < availableTypes.length; i += 2) {
+    const row = [];
+    
+    for (let j = i; j < Math.min(i + 2, availableTypes.length); j++) {
+      const type = availableTypes[j];
+      const isSelected = selectedTypes.has(type);
+      const text = isSelected ? `✅ ${type}` : `⬜ ${type}`;
+      
+      row.push({
+        text: text,
+        callback_data: `car_${j}`
+      });
+    }
+    
+    keyboard.push(row);
   }
   
-  return { inline_keyboard: keyboard };
+  // Кнопки управления
+  keyboard.push([
+    { text: '🎯 Применить фильтры', callback_data: 'car_apply' },
+    { text: '🔙 Назад к типам адресов', callback_data: 'car_back' }
+  ]);
+  
+  return { reply_markup: { inline_keyboard: keyboard } };
 }
 
 // Отправка файла с правильным MIME типом
@@ -223,27 +271,30 @@ async function sendDocumentSafe(chatId, buffer, filename) {
 // Обработчик команды /start
 async function handleStart(chatId) {
   initUserState(chatId);
+  userStates.get(chatId).state = STATES.IDLE;
   
   const welcomeMessage = `
 🚗 **Добро пожаловать в Rozysk Avto Bot v6.0!**
 
-🆕 **Новые возможности:**
-• Фильтрация по регионам (только Москва и область)
-• Выбор типов адресов
-• Фильтрация по возрасту авто
-• Интерактивные фильтры с возможностью перевыбора
+Этот бот поможет вам обработать файлы для розыска автомобилей:
 
 ✅ **Основные функции:**
-• Очистка адресов от лишней информации
-• Извлечение номерных знаков
-• Разделение на части по 2000 строк
-• Геопривязка для карт
+• Очищает адреса от лишней информации
+• Извлекает номерные знаки из данных авто
+• Фильтрует по региону (Москва и Подмосковье)
+• Разделяет большие файлы на части по 2000 строк
+
+🆕 **Новые возможности:**
+• Фильтрация по типу адреса
+• Фильтрация по типу авто (старое/новое)
+• Множественный выбор фильтров
+• Возможность перевыбора фильтров
 
 📎 **Поддерживаемые форматы:**
 • CSV (.csv)
 • Excel (.xlsx, .xls)
 
-📤 **Отправьте файл для обработки!**
+📤 **Просто отправьте мне файл для обработки!**
   `;
   
   await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
@@ -251,11 +302,12 @@ async function handleStart(chatId) {
 
 // Обработчик документов
 async function handleDocument(chatId, document) {
-  const userState = getUserState(chatId);
   const fileName = document.file_name;
   const fileSize = document.file_size;
 
   console.log(`Processing document: ${fileName}, size: ${fileSize} bytes`);
+  
+  initUserState(chatId);
 
   try {
     if (!isSupportedFile(fileName)) {
@@ -294,24 +346,41 @@ async function handleDocument(chatId, document) {
       csvContent = convertExcelToCSV(fileBuffer, fileName);
     }
 
-    // Сохраняем данные в состоянии
-    userState.csvContent = csvContent;
-    userState.fileName = fileName;
-
     // Получаем уникальные значения для фильтров
-    await bot.editMessageText('📊 Анализирую данные...', {
+    await bot.editMessageText('🔍 Анализирую данные для фильтров...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
 
-    userState.availableAddressTypes = getUniqueValues(csvContent, 'тип адреса');
-    userState.availableCarTypes = getUniqueValues(csvContent, 'флаг нового авто');
+    const uniqueValues = getUniqueValues(csvContent);
+    
+    // Сохраняем данные пользователя
+    const userState = userStates.get(chatId);
+    userState.fileName = fileName;
+    userState.csvContent = csvContent;
+    userState.availableAddressTypes = uniqueValues.addressTypes;
+    userState.availableCarTypes = uniqueValues.carTypes;
+    userState.state = STATES.WAITING_FILTER_CHOICE;
 
     await bot.deleteMessage(chatId, processingMsg.message_id);
 
-    // Спрашиваем о фильтрах
-    userState.state = STATES.ASKING_FILTERS;
-    await askForFilters(chatId);
+    // Предлагаем выбор фильтров
+    const filterMessage = `
+📊 **Файл загружен и проанализирован!**
+
+📈 **Статистика:**
+• Найдено типов адресов: ${uniqueValues.addressTypes.length}
+• Найдено типов авто: ${uniqueValues.carTypes.length}
+
+🎛 **Хотите применить фильтры для более точной выборки?**
+
+*Без фильтров будет обработан весь файл (только с географической фильтрацией по Москве и Подмосковью)*
+    `;
+
+    await bot.sendMessage(chatId, filterMessage, {
+      parse_mode: 'Markdown',
+      ...createFilterKeyboard()
+    });
 
   } catch (error) {
     console.error('Error processing document:', error);
@@ -319,303 +388,284 @@ async function handleDocument(chatId, document) {
   }
 }
 
-// Спрашиваем о применении фильтров
-async function askForFilters(chatId) {
-  const keyboard = {
-    inline_keyboard: [
-      [
-        { text: '🎯 Применить фильтры', callback_data: 'apply_filters' },
-        { text: '📁 Без фильтров', callback_data: 'no_filters' }
-      ]
-    ]
-  };
-
-  await bot.sendMessage(chatId, 
-    '🤔 **Хотите применить фильтры к данным?**\n\n' +
-    '🎯 **С фильтрами:** только Москва и область, выбор типов адресов и авто\n' +
-    '📁 **Без фильтров:** все данные как есть', 
-    { 
-      parse_mode: 'Markdown',
-      reply_markup: keyboard
-    }
-  );
-}
-
-// Выбор типов адресов
-async function selectAddressTypes(chatId) {
-  const userState = getUserState(chatId);
-  userState.state = STATES.SELECTING_ADDRESS_TYPES;
-
-  if (userState.availableAddressTypes.length === 0) {
-    await bot.sendMessage(chatId, '⚠️ В файле не найден столбец "тип адреса". Переходим к следующему шагу.');
-    await selectCarTypes(chatId);
-    return;
-  }
-
-  const keyboard = createFilterKeyboard(
-    userState.availableAddressTypes, 
-    userState.selectedAddressTypes,
-    true
-  );
-
-  await bot.sendMessage(chatId,
-    '🏠 **Выберите типы адресов для включения в результат:**\n\n' +
-    'Нажмите на варианты для выбора/отмены выбора.',
-    {
-      parse_mode: 'Markdown',
-      reply_markup: keyboard
-    }
-  );
-}
-
-// Выбор типов авто
-async function selectCarTypes(chatId) {
-  const userState = getUserState(chatId);
-  userState.state = STATES.SELECTING_CAR_TYPES;
-
-  if (userState.availableCarTypes.length === 0) {
-    await bot.sendMessage(chatId, '⚠️ В файле не найден столбец с данными о возрасте авто. Обрабатываем с текущими фильтрами.');
-    await processWithFilters(chatId);
-    return;
-  }
-
-  const keyboard = createFilterKeyboard(
-    userState.availableCarTypes, 
-    userState.selectedCarTypes,
-    true
-  );
-
-  await bot.sendMessage(chatId,
-    '🚗 **Выберите типы авто (старое/новое):**\n\n' +
-    'Нажмите на варианты для выбора/отмены выбора.',
-    {
-      parse_mode: 'Markdown',
-      reply_markup: keyboard
-    }
-  );
-}
-
-// Обработка с фильтрами
-async function processWithFilters(chatId) {
-  const userState = getUserState(chatId);
-  
-  const processingMsg = await bot.sendMessage(chatId, '🔄 Применяю фильтры и обрабатываю данные...');
-
-  try {
-    const filters = {
-      regionFilter: true, // Всегда фильтруем по регионам
-      addressTypes: Array.from(userState.selectedAddressTypes),
-      carTypes: Array.from(userState.selectedCarTypes)
-    };
-
-    const result = await processCSVInAppsScript(userState.csvContent, userState.fileName, filters);
-
-    if (result.success) {
-      await bot.deleteMessage(chatId, processingMsg.message_id);
-      await sendProcessedFiles(chatId, result, true);
-    } else {
-      await bot.editMessageText(`❌ Ошибка обработки: ${result.error}`, {
-        chat_id: chatId,
-        message_id: processingMsg.message_id
-      });
-    }
-
-  } catch (error) {
-    console.error('Error processing with filters:', error);
-    await bot.editMessageText(`❌ ${error.message}`, {
-      chat_id: chatId,
-      message_id: processingMsg.message_id
-    });
-  }
-}
-
-// Обработка без фильтров
-async function processWithoutFilters(chatId) {
-  const userState = getUserState(chatId);
-  
-  const processingMsg = await bot.sendMessage(chatId, '⚡ Обрабатываю данные без фильтров...');
-
-  try {
-    const result = await processCSVInAppsScript(userState.csvContent, userState.fileName);
-
-    if (result.success) {
-      await bot.deleteMessage(chatId, processingMsg.message_id);
-      await sendProcessedFiles(chatId, result, false);
-    } else {
-      await bot.editMessageText(`❌ Ошибка обработки: ${result.error}`, {
-        chat_id: chatId,
-        message_id: processingMsg.message_id
-      });
-    }
-
-  } catch (error) {
-    console.error('Error processing without filters:', error);
-    await bot.editMessageText(`❌ ${error.message}`, {
-      chat_id: chatId,
-      message_id: processingMsg.message_id
-    });
-  }
-}
-
-// Отправка обработанных файлов
-async function sendProcessedFiles(chatId, result, withFilters) {
-  const userState = getUserState(chatId);
-  userState.state = STATES.FILES_SENT;
-
-  const filterInfo = withFilters ? 
-    `\n🎯 **Применены фильтры:**\n` +
-    `• Регион: Москва и область\n` +
-    `• Типы адресов: ${userState.selectedAddressTypes.size > 0 ? Array.from(userState.selectedAddressTypes).join(', ') : 'все'}\n` +
-    `• Типы авто: ${userState.selectedCarTypes.size > 0 ? Array.from(userState.selectedCarTypes).join(', ') : 'все'}` :
-    '\n📁 **Обработано без фильтров**';
-
-  const resultMessage = `
-✅ **Файл успешно обработан!**
-
-📊 **Статистика:**
-• Всего строк: ${result.totalRows}
-• Создано частей: ${result.partsCount}${filterInfo}
-
-📁 **Отправляю файлы...**
-  `;
-
-  await bot.sendMessage(chatId, resultMessage, { parse_mode: 'Markdown' });
-
-  // Инструкция
-  const instructionMessage = `
-💡 **Инструкция по использованию:**
-
-1. Сохраните файлы на устройство
-2. Перейдите в Google My Maps (mymaps.google.com)
-3. Создайте новую карту
-4. Загружайте каждый файл отдельно
-5. Адреса автоматически станут точками на карте
-
-🎯 **Каждый файл: до 2000 записей**
-  `;
-
-  await bot.sendMessage(chatId, instructionMessage, { parse_mode: 'Markdown' });
-
-  // Отправляем файлы
-  for (let i = 0; i < result.files.length; i++) {
-    const file = result.files[i];
-    const buffer = Buffer.from(file.content, 'base64');
-    
-    await sendDocumentSafe(chatId, buffer, file.name);
-
-    if (i < result.files.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 1500));
-    }
-  }
-
-  // Кнопки для дальнейших действий
-  const keyboard = {
-    inline_keyboard: [
-      [
-        { text: '🔄 Перевыбрать фильтры', callback_data: 'reselect_filters' },
-        { text: '📎 Новый файл', callback_data: 'new_file' }
-      ]
-    ]
-  };
-
-  await bot.sendMessage(chatId, 
-    '🎉 **Все файлы отправлены!**\n\nВыберите дальнейшее действие:', 
-    { 
-      parse_mode: 'Markdown',
-      reply_markup: keyboard 
-    }
-  );
-}
-
 // Обработчик callback запросов
 async function handleCallbackQuery(callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const data = callbackQuery.data;
-  const userState = getUserState(chatId);
+  const messageId = callbackQuery.message.message_id;
+  
+  initUserState(chatId);
+  const userState = userStates.get(chatId);
 
   try {
     await bot.answerCallbackQuery(callbackQuery.id);
 
-    if (data === 'apply_filters') {
-      await selectAddressTypes(chatId);
-    }
-    else if (data === 'no_filters') {
-      await processWithoutFilters(chatId);
-    }
-    else if (data === 'back') {
-      if (userState.state === STATES.SELECTING_ADDRESS_TYPES) {
-        await askForFilters(chatId);
-      } else if (userState.state === STATES.SELECTING_CAR_TYPES) {
-        await selectAddressTypes(chatId);
-      }
-    }
-    else if (data === 'next') {
-      if (userState.state === STATES.SELECTING_ADDRESS_TYPES) {
-        await selectCarTypes(chatId);
-      } else if (userState.state === STATES.SELECTING_CAR_TYPES) {
-        await processWithFilters(chatId);
-      }
-    }
-    else if (data.startsWith('toggle_')) {
-      const index = parseInt(data.split('_')[1]);
+    if (data === 'filter_no') {
+      // Обработка без фильтров
+      userState.state = STATES.READY_TO_PROCESS;
       
-      if (userState.state === STATES.SELECTING_ADDRESS_TYPES) {
-        const option = userState.availableAddressTypes[index];
-        if (userState.selectedAddressTypes.has(option)) {
-          userState.selectedAddressTypes.delete(option);
+      await bot.editMessageText('🔄 Обрабатываю файл без дополнительных фильтров...', {
+        chat_id: chatId,
+        message_id: messageId
+      });
+
+      await processAndSendFiles(chatId, userState, null);
+      
+    } else if (data === 'filter_yes') {
+      // Начинаем выбор фильтров
+      userState.state = STATES.SELECTING_ADDRESS_TYPE;
+      
+      const addressMessage = `
+🏠 **Выберите типы адресов для фильтрации:**
+
+*Можете выбрать несколько вариантов. Повторное нажатие снимет галочку.*
+
+**Доступно типов:** ${userState.availableAddressTypes.length}
+      `;
+
+      await bot.editMessageText(addressMessage, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        ...createAddressTypeKeyboard(userState.availableAddressTypes, userState.selectedAddressTypes)
+      });
+      
+    } else if (data.startsWith('addr_')) {
+      // Обработка выбора типов адресов
+      if (data === 'addr_back') {
+        userState.state = STATES.WAITING_FILTER_CHOICE;
+        
+        const filterMessage = `
+📊 **Файл загружен и проанализирован!**
+
+🎛 **Хотите применить фильтры для более точной выборки?**
+        `;
+
+        await bot.editMessageText(filterMessage, {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          ...createFilterKeyboard()
+        });
+        
+      } else if (data === 'addr_next') {
+        userState.state = STATES.SELECTING_CAR_TYPE;
+        
+        const carMessage = `
+🚗 **Выберите типы авто для фильтрации:**
+
+*Можете выбрать несколько вариантов. Повторное нажатие снимет галочку.*
+
+**Выбрано типов адресов:** ${userState.selectedAddressTypes.size}
+**Доступно типов авто:** ${userState.availableCarTypes.length}
+        `;
+
+        await bot.editMessageText(carMessage, {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          ...createCarTypeKeyboard(userState.availableCarTypes, userState.selectedCarTypes)
+        });
+        
+      } else {
+        // Переключение выбора типа адреса
+        const index = parseInt(data.replace('addr_', ''));
+        const type = userState.availableAddressTypes[index];
+        
+        if (userState.selectedAddressTypes.has(type)) {
+          userState.selectedAddressTypes.delete(type);
         } else {
-          userState.selectedAddressTypes.add(option);
+          userState.selectedAddressTypes.add(type);
         }
         
-        const keyboard = createFilterKeyboard(
-          userState.availableAddressTypes, 
-          userState.selectedAddressTypes,
-          true
-        );
-        
-        await bot.editMessageReplyMarkup(keyboard, {
+        const addressMessage = `
+🏠 **Выберите типы адресов для фильтрации:**
+
+*Можете выбрать несколько вариантов. Повторное нажатие снимет галочку.*
+
+**Выбрано:** ${userState.selectedAddressTypes.size} из ${userState.availableAddressTypes.length}
+        `;
+
+        await bot.editMessageText(addressMessage, {
           chat_id: chatId,
-          message_id: callbackQuery.message.message_id
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          ...createAddressTypeKeyboard(userState.availableAddressTypes, userState.selectedAddressTypes)
         });
       }
-      else if (userState.state === STATES.SELECTING_CAR_TYPES) {
-        const option = userState.availableCarTypes[index];
-        if (userState.selectedCarTypes.has(option)) {
-          userState.selectedCarTypes.delete(option);
+      
+    } else if (data.startsWith('car_')) {
+      // Обработка выбора типов авто
+      if (data === 'car_back') {
+        userState.state = STATES.SELECTING_ADDRESS_TYPE;
+        
+        const addressMessage = `
+🏠 **Выберите типы адресов для фильтрации:**
+
+*Можете выбрать несколько вариантов. Повторное нажатие снимет галочку.*
+
+**Выбрано:** ${userState.selectedAddressTypes.size} из ${userState.availableAddressTypes.length}
+        `;
+
+        await bot.editMessageText(addressMessage, {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          ...createAddressTypeKeyboard(userState.availableAddressTypes, userState.selectedAddressTypes)
+        });
+        
+      } else if (data === 'car_apply') {
+        // Применяем фильтры
+        userState.state = STATES.READY_TO_PROCESS;
+        
+        const filters = {
+          addressTypes: Array.from(userState.selectedAddressTypes),
+          carTypes: Array.from(userState.selectedCarTypes)
+        };
+        
+        await bot.editMessageText('🎯 Применяю выбранные фильтры и обрабатываю файл...', {
+          chat_id: chatId,
+          message_id: messageId
+        });
+
+        await processAndSendFiles(chatId, userState, filters);
+        
+      } else {
+        // Переключение выбора типа авто
+        const index = parseInt(data.replace('car_', ''));
+        const type = userState.availableCarTypes[index];
+        
+        if (userState.selectedCarTypes.has(type)) {
+          userState.selectedCarTypes.delete(type);
         } else {
-          userState.selectedCarTypes.add(option);
+          userState.selectedCarTypes.add(type);
         }
         
-        const keyboard = createFilterKeyboard(
-          userState.availableCarTypes, 
-          userState.selectedCarTypes,
-          true
-        );
-        
-        await bot.editMessageReplyMarkup(keyboard, {
+        const carMessage = `
+🚗 **Выберите типы авто для фильтрации:**
+
+*Можете выбрать несколько вариантов. Повторное нажатие снимет галочку.*
+
+**Выбрано типов адресов:** ${userState.selectedAddressTypes.size}
+**Выбрано типов авто:** ${userState.selectedCarTypes.size} из ${userState.availableCarTypes.length}
+        `;
+
+        await bot.editMessageText(carMessage, {
           chat_id: chatId,
-          message_id: callbackQuery.message.message_id
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          ...createCarTypeKeyboard(userState.availableCarTypes, userState.selectedCarTypes)
         });
       }
-    }
-    else if (data === 'reselect_filters') {
-      // Сбрасываем выборы и начинаем заново
+      
+    } else if (data === 'reselect_filters') {
+      // Перевыбор фильтров
       userState.selectedAddressTypes.clear();
       userState.selectedCarTypes.clear();
-      await askForFilters(chatId);
-    }
-    else if (data === 'new_file') {
-      initUserState(chatId);
-      await bot.sendMessage(chatId, '📎 Отправьте новый файл для обработки.');
+      userState.state = STATES.WAITING_FILTER_CHOICE;
+      
+      const filterMessage = `
+🔄 **Перевыбор фильтров**
+
+🎛 **Хотите применить фильтры для более точной выборки?**
+      `;
+
+      await bot.editMessageText(filterMessage, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        ...createFilterKeyboard()
+      });
     }
 
   } catch (error) {
     console.error('Error handling callback query:', error);
-    await bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте еще раз.');
+    await bot.sendMessage(chatId, '❌ Произошла ошибка при обработке выбора.');
   }
 }
 
-// Обработчик текстовых сообщений
+// Обработка и отправка файлов
+async function processAndSendFiles(chatId, userState, filters) {
+  try {
+    const result = await processCSVInAppsScript(userState.csvContent, userState.fileName, filters);
+
+    if (result.success) {
+      // Отправляем информацию о результате
+      let filterInfo = '';
+      if (filters) {
+        filterInfo = `
+🎯 **Примененные фильтры:**
+• Типы адресов: ${filters.addressTypes.length > 0 ? filters.addressTypes.join(', ') : 'Все'}
+• Типы авто: ${filters.carTypes.length > 0 ? filters.carTypes.join(', ') : 'Все'}
+        `;
+      }
+
+      const resultMessage = `
+✅ **Файл успешно обработан!**
+${filterInfo}
+📊 **Статистика:**
+• Всего строк после фильтрации: ${result.totalRows}
+• Создано частей: ${result.partsCount}
+
+📁 **Отправляю обработанные файлы...**
+      `;
+
+      await bot.sendMessage(chatId, resultMessage, { parse_mode: 'Markdown' });
+
+      // Отправляем инструкцию
+      const instructionMessage = `
+💡 **Инструкция по использованию:**
+
+1. Сохраните полученные файлы на свое устройство
+2. Перейдите в Google My Maps (mymaps.google.com)
+3. Создайте новую карту
+4. Загружайте каждый файл по отдельности для получения меток на карте
+5. Адреса автоматически преобразуются в точки на карте
+
+🎯 **Каждый файл содержит до 2000 записей для оптимальной работы с картами**
+      `;
+
+      await bot.sendMessage(chatId, instructionMessage, { parse_mode: 'Markdown' });
+
+      // Отправляем файлы
+      for (let i = 0; i < result.files.length; i++) {
+        const file = result.files[i];
+        const buffer = Buffer.from(file.content, 'base64');
+        
+        await sendDocumentSafe(chatId, buffer, file.name);
+
+        if (i < result.files.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        }
+      }
+
+      // Отправляем кнопку для перевыбора фильтров
+      const finalMessage = `
+🎉 **Все файлы отправлены!**
+
+Можете загружать их в Google My Maps или перевыбрать фильтры для получения новых файлов.
+      `;
+
+      await bot.sendMessage(chatId, finalMessage, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔄 Перевыбрать фильтры', callback_data: 'reselect_filters' }]
+          ]
+        }
+      });
+
+    } else {
+      await bot.sendMessage(chatId, `❌ Ошибка обработки: ${result.error}`);
+    }
+
+  } catch (error) {
+    console.error('Error processing and sending files:', error);
+    await bot.sendMessage(chatId, `❌ ${error.message}`);
+  }
+}
+
+// Обработчик других сообщений
 async function handleMessage(chatId, text) {
   if (text && !text.startsWith('/')) {
     await bot.sendMessage(chatId, '📎 Отправьте файл для обработки (CSV или Excel)');
@@ -635,15 +685,12 @@ app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
 
       if (message.text === '/start') {
         await handleStart(chatId);
-      }
-      else if (message.document) {
+      } else if (message.document) {
         await handleDocument(chatId, message.document);
-      }
-      else if (message.text) {
+      } else if (message.text) {
         await handleMessage(chatId, message.text);
       }
-    }
-    else if (update.callback_query) {
+    } else if (update.callback_query) {
       await handleCallbackQuery(update.callback_query);
     }
 
@@ -663,35 +710,40 @@ app.get('/', (req, res) => {
       <title>Rozysk Avto Bot v6.0</title>
       <style>
         body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #f0f0f0; }
-        .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .status { color: #4CAF50; font-size: 24px; font-weight: bold; }
-        .info { color: #666; margin-top: 20px; line-height: 1.6; }
-        .version { background: #e3f2fd; padding: 15px; border-radius: 5px; margin: 20px 0; }
-        .features { background: #f3e5f5; padding: 15px; border-radius: 5px; margin: 10px 0; text-align: left; }
+        .container { max-width: 700px; margin: 0 auto; background: white; padding: 40px; border-radius: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+        .status { color: #4CAF50; font-size: 28px; font-weight: bold; margin-bottom: 20px; }
+        .version { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 10px; margin: 20px 0; }
+        .features { background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 15px 0; text-align: left; }
+        .new-badge { background: #ff6b6b; color: white; padding: 3px 8px; border-radius: 12px; font-size: 12px; margin-left: 10px; }
+        .info { color: #666; margin-top: 25px; line-height: 1.8; }
       </style>
     </head>
     <body>
       <div class="container">
         <h1>🚗 Rozysk Avto Bot</h1>
         <div class="status">✅ Сервис работает!</div>
+        
         <div class="version">
-          <strong>Версия 6.0 - ИНТЕРАКТИВНЫЕ ФИЛЬТРЫ</strong><br>
-          • Полная фильтрация данных<br>
-          • Интерактивный выбор параметров<br>
-          • Возможность перевыбора фильтров
+          <h3>📦 Версия 6.0 <span class="new-badge">NEW</span></h3>
+          <p>Система умной фильтрации данных</p>
         </div>
+        
         <div class="features">
-          <strong>🎯 Новые возможности:</strong><br>
-          • Фильтрация по регионам (Москва + область)<br>
-          • Выбор типов адресов<br>
-          • Фильтрация по возрасту авто<br>
-          • Кнопки "Назад" и "Перевыбрать"<br>
-          • Интерактивные checkbox'ы
+          <h4>🆕 Новые возможности:</h4>
+          <ul>
+            <li>🗺️ Автофильтрация по региону (Москва + Подмосковье)</li>
+            <li>🏠 Фильтрация по типам адресов (множественный выбор)</li>
+            <li>🚗 Фильтрация по типам авто (старое/новое)</li>
+            <li>✅ Интерактивные галочки для выбора</li>
+            <li>🔄 Возможность перевыбора фильтров</li>
+            <li>🔙 Навигация "Назад" по меню</li>
+          </ul>
         </div>
+        
         <div class="info">
-          <p><strong>Telegram:</strong> <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
-          <p><strong>Поддержка:</strong> CSV, Excel (xlsx, xls)</p>
-          <p><strong>Статус:</strong> ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}</p>
+          <p><strong>🤖 Telegram:</strong> <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
+          <p><strong>📎 Форматы:</strong> CSV, Excel (xlsx, xls)</p>
+          <p><strong>🕐 Онлайн:</strong> ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}</p>
         </div>
       </div>
     </body>
@@ -702,24 +754,18 @@ app.get('/', (req, res) => {
 app.get('/doget', (req, res) => {
   res.json({ 
     status: 'ok', 
-    message: 'Rozysk Avto Bot v6.0 - Interactive Filters',
+    version: '6.0',
+    message: 'Rozysk Avto Bot v6.0 with smart filtering',
     webhook: WEBHOOK_URL,
     timestamp: new Date().toISOString(),
     features: [
-      'Regional filtering (Moscow + region)',
-      'Interactive address type selection',
-      'Car type filtering',
+      'Regional filtering (Moscow + Moscow region)',
+      'Address type filtering with multi-select',
+      'Car type filtering (old/new)',
+      'Interactive checkboxes',
       'Filter reselection capability',
-      'Back navigation buttons'
+      'Back navigation'
     ]
-  });
-});
-
-app.post('/dopost', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    received: req.body,
-    timestamp: new Date().toISOString()
   });
 });
 
@@ -750,9 +796,9 @@ process.on('SIGINT', async () => {
 app.listen(port, async () => {
   console.log(`🚀 Server v6.0 running on port ${port}`);
   console.log(`📡 Webhook URL: ${WEBHOOK_URL}`);
-  console.log(`🎯 Features: Interactive Filters + Regional Filtering`);
+  console.log(`🎯 Features: Regional + Type filtering, Multi-select UI`);
   
   await setupWebhook();
   
-  console.log('✅ Telegram bot v6.0 with Interactive Filters is ready!');
+  console.log('✅ Telegram bot v6.0 with smart filtering is ready!');
 });
