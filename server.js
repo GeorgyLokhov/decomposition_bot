@@ -2,163 +2,218 @@ const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const multer = require('multer');
 const axios = require('axios');
-const fs = require('fs');
+const FormData = require('form-data');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const port = process.env.PORT || 3000;
 
-// Telegram Bot Token из переменных окружения
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
+// Конфигурация
+const BOT_TOKEN = process.env.BOT_TOKEN; // Добавим в секреты Render
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL; // URL из Apps Script
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-// Настройка multer для временного хранения файлов
-const upload = multer({ dest: 'uploads/' });
-
 // Middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Обработчики бота
+// Хранилище состояний пользователей
+const userStates = new Map();
+
+// Определяем тип файла
+function getFileType(filename) {
+  const ext = filename.toLowerCase().split('.').pop();
+  return ext;
+}
+
+// Проверяем поддерживаемые форматы
+function isSupportedFile(filename) {
+  const supportedTypes = ['csv', 'xlsx', 'xls'];
+  const fileType = getFileType(filename);
+  return supportedTypes.includes(fileType);
+}
+
+// Конвертируем файл в base64
+async function fileToBase64(fileUrl, filename) {
+  try {
+    const response = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+    const base64 = Buffer.from(response.data).toString('base64');
+    return base64;
+  } catch (error) {
+    console.error('Error converting file to base64:', error);
+    throw error;
+  }
+}
+
+// Отправляем файл на обработку в Apps Script
+async function processFileInAppsScript(fileContent, fileName, fileType) {
+  try {
+    const response = await axios.post(APPS_SCRIPT_URL, {
+      action: 'process_file',
+      fileContent: fileContent,
+      fileName: fileName,
+      fileType: fileType
+    }, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return response.data;
+  } catch (error) {
+    console.error('Error processing file in Apps Script:', error);
+    throw error;
+  }
+}
+
+// Команда /start
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
+  
   const welcomeMessage = `
-🤖 Добро пожаловать в бот розыска авто!
+🚗 **Добро пожаловать в Rozysk Avto Bot!**
 
-📁 Отправьте файл (.xlsx, .xls, .csv) для обработки.
+Этот бот поможет вам обработать файлы для розыска автомобилей:
 
-ℹ️ Бот автоматически:
-• Очистит адреса
-• Извлечет номерные знаки
-• Разделит данные на части по 2000 строк
-• Подготовит файлы для Google My Maps
+✅ **Что я умею:**
+• Очищать адреса от лишней информации
+• Извлекать номерные знаки из данных авто
+• Разделять большие файлы на части по 2000 строк
+• Добавлять геопривязку для карт
 
-Просто отправьте ваш файл!
+📎 **Поддерживаемые форматы:**
+• CSV (.csv)
+• Excel (.xlsx, .xls)
+
+📤 **Просто отправьте мне файл для обработки!**
   `;
   
-  bot.sendMessage(chatId, welcomeMessage);
+  bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
 });
 
 // Обработка документов
 bot.on('document', async (msg) => {
   const chatId = msg.chat.id;
   const document = msg.document;
-  
+  const fileName = document.file_name;
+
   try {
     // Проверяем формат файла
-    const allowedExtensions = ['.xlsx', '.xls', '.csv'];
-    const fileExtension = document.file_name.slice(document.file_name.lastIndexOf('.')).toLowerCase();
-    
-    if (!allowedExtensions.includes(fileExtension)) {
-      bot.sendMessage(chatId, '❌ Поддерживаются только файлы: .xlsx, .xls, .csv');
+    if (!isSupportedFile(fileName)) {
+      bot.sendMessage(chatId, '❌ Поддерживаются только файлы: CSV, Excel (.xlsx, .xls)');
       return;
     }
-    
-    bot.sendMessage(chatId, '⏳ Обрабатываю файл...');
-    
-    // Скачиваем файл
-    const fileLink = await bot.getFileLink(document.file_id);
-    const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-    const fileBuffer = Buffer.from(response.data);
-    
+
+    // Отправляем сообщение о начале обработки
+    const processingMsg = await bot.sendMessage(chatId, '⏳ Обрабатываю файл...');
+
+    // Получаем ссылку на файл
+    const fileInfo = await bot.getFile(document.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fileInfo.file_path}`;
+
     // Конвертируем в base64
-    const fileBase64 = fileBuffer.toString('base64');
-    
-    // Отправляем в Google Apps Script
-    const appsScriptResponse = await axios.post(APPS_SCRIPT_URL, {
-      action: 'process_file',
-      fileData: fileBase64,
-      filename: document.file_name,
-      userId: chatId
-    }, {
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      timeout: 300000 // 5 минут
+    const fileContent = await fileToBase64(fileUrl, fileName);
+    const fileType = getFileType(fileName);
+
+    // Отправляем на обработку в Apps Script
+    bot.editMessageText('🔄 Обрабатываю данные в облаке...', {
+      chat_id: chatId,
+      message_id: processingMsg.message_id
     });
-    
-    const result = appsScriptResponse.data;
-    
-    if (!result.success) {
-      throw new Error(result.error || 'Ошибка обработки файла');
-    }
-    
-    // Отправляем результаты
-    bot.sendMessage(chatId, `
-✅ Файл обработан успешно!
 
-📊 Всего строк: ${result.totalRows}
-📁 Частей: ${result.chunks}
+    const result = await processFileInAppsScript(fileContent, fileName, fileType);
 
-📥 Загружаю обработанные файлы...
-    `);
-    
-    // Отправляем каждую часть как CSV файл
-    for (let i = 0; i < result.data.length; i++) {
-      const chunk = result.data[i];
-      const csvContent = convertToCSV(chunk);
-      
-      const filename = `${i + 1}_часть_розыска_авто.csv`;
-      
-      // Создаем временный файл
-      const tempFilePath = `uploads/${filename}`;
-      fs.writeFileSync(tempFilePath, csvContent, 'utf8');
-      
-      // Отправляем файл
-      await bot.sendDocument(chatId, tempFilePath, {
-        caption: `📁 Часть ${i + 1} из ${result.chunks}`
+    if (result.success) {
+      // Удаляем сообщение о обработке
+      bot.deleteMessage(chatId, processingMsg.message_id);
+
+      // Отправляем информацию о результате
+      const resultMessage = `
+✅ **Файл успешно обработан!**
+
+📊 **Статистика:**
+• Всего строк: ${result.totalRows}
+• Создано частей: ${result.partsCount}
+
+📁 **Получаю обработанные файлы...**
+      `;
+
+      await bot.sendMessage(chatId, resultMessage, { parse_mode: 'Markdown' });
+
+      // Отправляем инструкцию
+      const instructionMessage = `
+💡 **Инструкция по использованию:**
+
+1. Сохраните полученные файлы на свое устройство
+2. Перейдите в Google My Maps (mymaps.google.com)
+3. Создайте новую карту
+4. Загружайте каждый файл по отдельности для получения меток на карте
+5. Адреса автоматически преобразуются в точки на карте
+
+🎯 **Каждый файл содержит до 2000 записей для оптимальной работы с картами**
+      `;
+
+      await bot.sendMessage(chatId, instructionMessage, { parse_mode: 'Markdown' });
+
+      // Отправляем файлы
+      for (let i = 0; i < result.files.length; i++) {
+        const file = result.files[i];
+        const buffer = Buffer.from(file.content, 'base64');
+        
+        await bot.sendDocument(chatId, buffer, {
+          filename: file.name
+        });
+
+        // Небольшая задержка между отправками
+        if (i < result.files.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+
+      await bot.sendMessage(chatId, '🎉 Все файлы отправлены! Можете загружать их в Google My Maps.');
+
+    } else {
+      bot.editMessageText(`❌ Ошибка обработки: ${result.error}`, {
+        chat_id: chatId,
+        message_id: processingMsg.message_id
       });
-      
-      // Удаляем временный файл
-      fs.unlinkSync(tempFilePath);
-      
-      // Небольшая задержка между отправками
-      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    
-    bot.sendMessage(chatId, `
-🎉 Все файлы отправлены!
 
-💡 Инструкция:
-1. Перейдите на maps.google.com
-2. Нажмите "Создать карту"
-3. Импортируйте каждый файл отдельно
-4. Выберите столбец с адресами для геолокации
-
-✨ Готово! Ваши данные на карте.
-    `);
-    
   } catch (error) {
-    console.error('Ошибка обработки файла:', error);
-    bot.sendMessage(chatId, `❌ Ошибка: ${error.message}`);
+    console.error('Error processing document:', error);
+    bot.sendMessage(chatId, `❌ Произошла ошибка: ${error.message}`);
   }
 });
 
-// Функция конвертации в CSV
-function convertToCSV(data) {
-  return data.map(row => 
-    row.map(cell => {
-      const cellStr = String(cell || '');
-      // Экранируем кавычки и запятые
-      if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
-        return `"${cellStr.replace(/"/g, '""')}"`;
-      }
-      return cellStr;
-    }).join(',')
-  ).join('\n');
-}
+// Обработка других типов сообщений
+bot.on('message', (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (msg.text && !msg.text.startsWith('/')) {
+    bot.sendMessage(chatId, '📎 Отправьте файл для обработки (CSV или Excel)');
+  }
+});
 
-// Health check endpoint
+// Обработка ошибок бота
+bot.on('error', (error) => {
+  console.error('Telegram bot error:', error);
+});
+
+// Express routes
 app.get('/', (req, res) => {
-  res.json({ status: 'Bot is running', timestamp: new Date().toISOString() });
+  res.send('Rozysk Avto Bot is running!');
 });
 
-// Webhook endpoint (если нужен)
-app.post('/webhook', (req, res) => {
-  bot.processUpdate(req.body);
-  res.sendStatus(200);
+app.get('/doget', (req, res) => {
+  res.json({ status: 'ok', message: 'Rozysk Avto Bot server is running' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.post('/dopost', (req, res) => {
+  res.json({ status: 'ok', received: req.body });
+});
+
+// Запуск сервера
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+  console.log('Telegram bot is polling...');
 });
