@@ -1,6 +1,7 @@
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
+const XLSX = require('xlsx');
 
 const app = express();
 const port = process.env.PORT || 10000;
@@ -51,7 +52,6 @@ async function fileToBase64(fileUrl) {
     
     console.log('File downloaded, size:', response.data.byteLength, 'bytes');
     const base64 = Buffer.from(response.data).toString('base64');
-    console.log('Base64 string length:', base64.length);
     
     return base64;
   } catch (error) {
@@ -60,16 +60,42 @@ async function fileToBase64(fileUrl) {
   }
 }
 
-// Отправляем файл на обработку в Apps Script
-async function processFileInAppsScript(fileContent, fileName, fileType) {
+// НОВАЯ ФУНКЦИЯ: Конвертация Excel в CSV на сервере
+function convertExcelToCSV(buffer, fileName) {
   try {
-    console.log(`Sending to Apps Script: ${fileName}, base64 length: ${fileContent.length}`);
+    console.log('Converting Excel to CSV on server...');
+    
+    // Читаем Excel файл
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    
+    // Берем первый лист
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    
+    // Конвертируем в CSV
+    const csvContent = XLSX.utils.sheet_to_csv(worksheet);
+    
+    console.log('Excel converted to CSV successfully, length:', csvContent.length);
+    return csvContent;
+    
+  } catch (error) {
+    console.error('Error converting Excel to CSV:', error);
+    throw new Error('Не удалось конвертировать Excel файл: ' + error.message);
+  }
+}
+
+// Отправляем CSV на обработку в Apps Script
+async function processCSVInAppsScript(csvContent, fileName) {
+  try {
+    console.log(`Sending CSV to Apps Script: ${fileName}, length: ${csvContent.length}`);
+    
+    // Кодируем CSV в base64
+    const base64Content = Buffer.from(csvContent, 'utf8').toString('base64');
     
     const response = await axios.post(APPS_SCRIPT_URL, {
-      action: 'process_file',
-      fileContent: fileContent,
-      fileName: fileName,
-      fileType: fileType
+      action: 'process_csv',
+      csvContent: base64Content,
+      fileName: fileName
     }, {
       headers: {
         'Content-Type': 'application/json'
@@ -80,21 +106,21 @@ async function processFileInAppsScript(fileContent, fileName, fileType) {
     console.log('Apps Script response received');
     return response.data;
   } catch (error) {
-    console.error('Error processing file in Apps Script:', error);
+    console.error('Error processing CSV in Apps Script:', error);
     
     if (error.response) {
       console.error('Response status:', error.response.status);
       console.error('Response data:', error.response.data);
     }
     
-    throw new Error('Ошибка обработки в Google Apps Script. Попробуйте еще раз или используйте файл меньшего размера.');
+    throw new Error('Ошибка обработки в Google Apps Script. Попробуйте еще раз.');
   }
 }
 
 // Обработчик команды /start
 async function handleStart(chatId) {
   const welcomeMessage = `
-🚗 **Добро пожаловать в Rozysk Avto Bot!**
+🚗 **Добро пожаловать в Rozysk Avto Bot v5.0!**
 
 Этот бот поможет вам обработать файлы для розыска автомобилей:
 
@@ -109,6 +135,11 @@ async function handleStart(chatId) {
 • Excel (.xlsx, .xls)
 
 📤 **Просто отправьте мне файл для обработки!**
+
+🔧 **Что нового:**
+• Улучшена обработка Excel файлов
+• Исправлены проблемы с конвертацией
+• Более быстрая обработка данных
   `;
   
   await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
@@ -135,22 +166,41 @@ async function handleDocument(chatId, document) {
     const fileInfo = await bot.getFile(document.file_id);
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fileInfo.file_path}`;
 
-    // Конвертируем в base64
-    await bot.editMessageText('📤 Конвертирую файл...', {
+    // Загружаем файл
+    await bot.editMessageText('📥 Загружаю файл...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
 
-    const fileContent = await fileToBase64(fileUrl);
+    const response = await axios.get(fileUrl, { 
+      responseType: 'arraybuffer',
+      timeout: 60000
+    });
+
+    const fileBuffer = Buffer.from(response.data);
     const fileType = getFileType(fileName);
+    let csvContent;
+
+    if (fileType === 'csv') {
+      // CSV файл - читаем как есть
+      csvContent = fileBuffer.toString('utf8');
+    } else {
+      // Excel файл - конвертируем на сервере
+      await bot.editMessageText('🔄 Конвертирую Excel в CSV...', {
+        chat_id: chatId,
+        message_id: processingMsg.message_id
+      });
+      
+      csvContent = convertExcelToCSV(fileBuffer, fileName);
+    }
 
     // Отправляем на обработку в Apps Script
-    await bot.editMessageText('🔄 Обрабатываю данные в облаке... Это может занять несколько минут.', {
+    await bot.editMessageText('☁️ Обрабатываю данные в облаке...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
 
-    const result = await processFileInAppsScript(fileContent, fileName, fileType);
+    const result = await processCSVInAppsScript(csvContent, fileName);
 
     if (result.success) {
       // Удаляем сообщение о обработке
@@ -259,20 +309,30 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Rozysk Avto Bot</title>
+      <title>Rozysk Avto Bot v5.0</title>
       <style>
-        body { font-family: Arial, sans-serif; margin: 50px; text-align: center; }
-        .status { color: green; font-size: 24px; }
-        .info { color: #666; margin-top: 20px; }
+        body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #f0f0f0; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .status { color: #4CAF50; font-size: 24px; font-weight: bold; }
+        .info { color: #666; margin-top: 20px; line-height: 1.6; }
+        .version { background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 20px 0; }
       </style>
     </head>
     <body>
-      <h1>🚗 Rozysk Avto Bot</h1>
-      <div class="status">✅ Сервис работает! v4.0</div>
-      <div class="info">
-        <p>Перейдите в Telegram: <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
-        <p>Поддерживаются: CSV, Excel (xlsx, xls)</p>
-        <p>Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}</p>
+      <div class="container">
+        <h1>🚗 Rozysk Avto Bot</h1>
+        <div class="status">✅ Сервис работает!</div>
+        <div class="version">
+          <strong>Версия 5.0</strong><br>
+          • Улучшена обработка Excel файлов<br>
+          • Конвертация на сервере<br>
+          • Исправлены ошибки Apps Script
+        </div>
+        <div class="info">
+          <p><strong>Telegram:</strong> <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
+          <p><strong>Поддерживаемые форматы:</strong> CSV, Excel (xlsx, xls)</p>
+          <p><strong>Время работы:</strong> ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}</p>
+        </div>
       </div>
     </body>
     </html>
@@ -282,9 +342,14 @@ app.get('/', (req, res) => {
 app.get('/doget', (req, res) => {
   res.json({ 
     status: 'ok', 
-    message: 'Rozysk Avto Bot server v4.0 is running',
+    message: 'Rozysk Avto Bot v5.0 is running',
     webhook: WEBHOOK_URL,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    features: [
+      'Excel conversion on server',
+      'Improved error handling',
+      'Better performance'
+    ]
   });
 });
 
@@ -321,11 +386,12 @@ process.on('SIGINT', async () => {
 
 // Запуск сервера
 app.listen(port, async () => {
-  console.log(`🚀 Server running on port ${port}`);
+  console.log(`🚀 Server v5.0 running on port ${port}`);
   console.log(`📡 Webhook URL: ${WEBHOOK_URL}`);
+  console.log(`🔧 Excel conversion: ON SERVER`);
   
   // Устанавливаем webhook
   await setupWebhook();
   
-  console.log('✅ Telegram bot is ready with webhook v4.0!');
+  console.log('✅ Telegram bot v5.0 is ready!');
 });
