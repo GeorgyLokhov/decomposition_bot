@@ -260,3 +260,72 @@ app.get('/', (req, res) => {
     <html>
     <head>
       <title>Rozysk Avto Bot</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 50px; text-align: center; }
+        .status { color: green; font-size: 24px; }
+        .info { color: #666; margin-top: 20px; }
+      </style>
+    </head>
+    <body>
+      <h1>🚗 Rozysk Avto Bot</h1>
+      <div class="status">✅ Сервис работает! v4.0</div>
+      <div class="info">
+        <p>Перейдите в Telegram: <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
+        <p>Поддерживаются: CSV, Excel (xlsx, xls)</p>
+        <p>Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}</p>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+app.get('/doget', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    message: 'Rozysk Avto Bot server v4.0 is running',
+    webhook: WEBHOOK_URL,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.post('/dopost', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    received: req.body,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('Получен SIGTERM, завершаем работу...');
+  try {
+    await bot.deleteWebHook();
+    console.log('Webhook удален');
+  } catch (error) {
+    console.error('Ошибка при удалении webhook:', error);
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('Получен SIGINT, завершаем работу...');
+  try {
+    await bot.deleteWebHook();
+    console.log('Webhook удален');
+  } catch (error) {
+    console.error('Ошибка при удалении webhook:', error);
+  }
+  process.exit(0);
+});
+
+// Запуск сервера
+app.listen(port, async () => {
+  console.log(`🚀 Server running on port ${port}`);
+  console.log(`📡 Webhook URL: ${WEBHOOK_URL}`);
+  
+  // Устанавливаем webhook
+  await setupWebhook();
+  
+  console.log('✅ Telegram bot is ready with webhook v4.0!');
+});
