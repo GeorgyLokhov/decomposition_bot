@@ -40,45 +40,42 @@ const STATES = {
   PROCESSING: 'processing'
 };
 
-// УЛУЧШЕННЫЕ СПИСКИ ГОРОДОВ
-const ALLOWED_REGIONS = {
-  // Москва и варианты написания
-  moscow: ['москва', 'moscow', 'мск'],
+// Список дальних городов и регионов для исключения
+const DISTANT_CITIES_AND_REGIONS = [
+  // Крупные города
+  'новосибирск', 'екатеринбург', 'нижний новгород', 'казань', 'челябинск', 'омск', 'самара',
+  'ростов-на-дону', 'уфа', 'красноярск', 'воронеж', 'пермь', 'волгоград', 'краснодар',
+  'саратов', 'тюмень', 'тольятти', 'ижевск', 'барнаул', 'ульяновск', 'иркутск', 'хабаровск',
+  'ярославль', 'владивосток', 'махачкала', 'томск', 'оренбург', 'кемерово', 'новокузнецк',
+  'рязань', 'пенза', 'липецк', 'киров', 'чебоксары', 'калининград', 'брянск', 'курск',
+  'иваново', 'магнитогорск', 'тверь', 'ставрополь', 'белгород', 'сочи', 'нижний тагил',
   
-  // Московская область и варианты
-  moscowRegion: ['московская область', 'мо', 'м.о.', 'подмосковье', 'moscow region', 'moscow oblast'],
+  // Регионы и области
+  'алтайский край', 'амурская область', 'архангельская область', 'астраханская область',
+  'белгородская область', 'брянская область', 'владимирская область', 'волгоградская область',
+  'вологодская область', 'воронежская область', 'еврейская автономная область',
+  'забайкальский край', 'ивановская область', 'иркутская область', 'кабардино-балкарская республика',
+  'калининградская область', 'калужская область', 'камчатский край', 'карачаево-черкесская республика',
+  'кемеровская область', 'кировская область', 'костромская область', 'краснодарский край',
+  'красноярский край', 'курганская область', 'курская область', 'ленинградская область',
+  'липецкая область', 'магаданская область', 'мурманская область', 'нижегородская область',
+  'новгородская область', 'новосибирская область', 'омская область', 'оренбургская область',
+  'орловская область', 'пензенская область', 'пермский край', 'приморский край',
+  'псковская область', 'республика адыгея', 'республика алтай', 'республика башкортостан',
+  'республика бурятия', 'республика дагестан', 'республика ингушетия', 'республика калмыкия',
+  'республика карелия', 'республика коми', 'республика крым', 'республика марий эл',
+  'республика мордовия', 'республика саха', 'республика северная осетия', 'республика татарстан',
+  'республика тыва', 'республика удмуртия', 'республика хакасия', 'республика чечня',
+  'республика чувашия', 'ростовская область', 'рязанская область', 'самарская область',
+  'саратовская область', 'сахалинская область', 'свердловская область', 'смоленская область',
+  'тамбовская область', 'тверская область', 'томская область', 'тульская область',
+  'тюменская область', 'ульяновская область', 'хабаровский край', 'ханты-мансийский автономный округ',
+  'челябинская область', 'чукотский автономный округ', 'ямало-ненецкий автономный округ',
+  'ярославская область',
   
-  // Города Подмосковья и близлежащие
-  cities: [
-    'балашиха', 'одинцово', 'подольск', 'королёв', 'мытищи', 'химки', 'люберцы',
-    'коломна', 'электросталь', 'красногорск', 'сергиев посад', 'щёлково', 
-    'орехово-зуево', 'раменское', 'жуковский', 'пушкино', 'железнодорожный',
-    'домодедово', 'видное', 'ивантеевка', 'фрязино', 'лобня', 'клин',
-    'воскресенск', 'рошаль', 'кашира', 'чехов', 'дмитров', 'ногинск',
-    'павловский посад', 'солнечногорск', 'истра', 'зеленоград', 'троицк',
-    'щербинка', 'красноармейск', 'юбилейный', 'котельники', 'реутов',
-    'долгопрудный', 'лыткарино', 'дзержинский', 'бронницы', 'апрелевка',
-    'наро-фоминск', 'егорьевск', 'ступино', 'серпухов', 'озёры', 'кашира'
-  ]
-};
-
-const FORBIDDEN_REGIONS = [
-  // Дальние регионы России
-  'санкт-петербург', 'спб', 'ленинградская область', 'новосибирск', 'екатеринбург',
-  'нижний новгород', 'казань', 'челябинск', 'омск', 'самара', 'ростов-на-дону',
-  'уфа', 'красноярск', 'воронеж', 'пермь', 'волгоград', 'краснодар', 'саратов',
-  'тюмень', 'тольятти', 'ижевск', 'барнаул', 'ульяновск', 'иркутск', 'хабаровск',
-  'ярославль', 'владивосток', 'махачкала', 'томск', 'оренбург', 'кемерово',
-  'рязань', 'астрахань', 'пенза', 'липецк', 'тула', 'киров', 'чебоксары',
-  'калининград', 'брянск', 'курск', 'иваново', 'магнитогорск', 'тверь',
-  'ставрополь', 'симферополь', 'белгород', 'архангельск', 'владимир',
-  'калуга', 'сочи', 'смоленск', 'мурманск', 'череповец', 'вологда',
-  'орёл', 'сургут', 'владикавказ', 'чита', 'таганрог', 'комсомольск-на-амуре',
-  // Страны СНГ и дальнего зарубежья
-  'украина', 'белоруссия', 'беларусь', 'казахстан', 'киев', 'минск', 'алматы',
-  'ташкент', 'баку', 'ереван', 'тбилиси', 'кишинёв', 'душанбе', 'бишкек',
-  'астана', 'нур-султан', 'узбекистан', 'таджикистан', 'киргизия', 'туркмения',
-  'азербайджан', 'армения', 'грузия', 'молдова', 'литва', 'латвия', 'эстония'
+  // Сокращения
+  'нижегородская обл', 'свердловская обл', 'челябинская обл', 'новосибирская обл',
+  'красноярский кр', 'пермский кр', 'краснодарский кр', 'алтайский кр'
 ];
 
 // Устанавливаем webhook
@@ -123,138 +120,77 @@ function convertExcelToCSV(buffer, fileName) {
   }
 }
 
-// УЛУЧШЕННАЯ ФУНКЦИЯ: Проверка, является ли адрес московским/подмосковным
-function isAddressInMoscowRegion(address) {
-  if (!address || typeof address !== 'string') {
-    return false;
-  }
+// Проверяем, содержит ли адрес дальний город или регион
+function containsDistantCity(address) {
+  if (!address) return false;
   
-  const normalizedAddress = address.toLowerCase().trim();
+  const addressLower = address.toLowerCase();
   
-  // Проверяем запрещенные регионы (приоритет)
-  for (const forbidden of FORBIDDEN_REGIONS) {
-    if (normalizedAddress.includes(forbidden)) {
-      return false;
+  // Паттерны для поиска городов и регионов
+  const cityPatterns = [
+    /г\.?\s*([а-яё\-\s]+)/gi,           // г. Название, г Название
+    /город\s+([а-яё\-\s]+)/gi,         // город Название
+    /([а-яё\-\s]+)\s+область/gi,       // Название область
+    /([а-яё\-\s]+)\s+край/gi,          // Название край
+    /([а-яё\-\s]+)\s+республика/gi,    // Название республика
+    /республика\s+([а-яё\-\s]+)/gi,    // республика Название
+    /([а-яё\-\s]+)\s+обл\.?/gi,        // Название обл
+    /([а-яё\-\s]+)\s+кр\.?/gi,         // Название кр
+    /,\s*([а-яё\-\s]+)(?=,|$)/gi       // , Название (между запятыми или в конце)
+  ];
+  
+  const foundCities = new Set();
+  
+  // Извлекаем все потенциальные названия городов/регионов
+  cityPatterns.forEach(pattern => {
+    let match;
+    while ((match = pattern.exec(addressLower)) !== null) {
+      const cityName = match[1].trim().replace(/\s+/g, ' ');
+      if (cityName.length > 2) { // игнорируем слишком короткие названия
+        foundCities.add(cityName);
+      }
     }
-  }
+  });
   
-  // Проверяем разрешенные регионы
-  // Москва
-  if (ALLOWED_REGIONS.moscow.some(city => normalizedAddress.includes(city))) {
-    return true;
-  }
-  
-  // Московская область
-  if (ALLOWED_REGIONS.moscowRegion.some(region => normalizedAddress.includes(region))) {
-    return true;
-  }
-  
-  // Города Подмосковья
-  if (ALLOWED_REGIONS.cities.some(city => normalizedAddress.includes(city))) {
-    return true;
-  }
-  
-  // Дополнительные проверки для сложных случаев
-  // Если есть слово "Россия" и "Москва" - скорее всего московский адрес
-  if (normalizedAddress.includes('россия') && normalizedAddress.includes('москва')) {
-    return true;
-  }
-  
-  // Если начинается с индекса Москвы или Подмосковья (1xxxxx)
-  if (/^1\d{5}/.test(normalizedAddress)) {
-    return true;
+  // Проверяем каждое найденное название
+  for (const cityName of foundCities) {
+    // Проверяем точное совпадение или вхождение в список дальних городов
+    for (const distantCity of DISTANT_CITIES_AND_REGIONS) {
+      if (cityName === distantCity || cityName.includes(distantCity) || distantCity.includes(cityName)) {
+        // Дополнительная проверка: это не название улицы
+        if (!isStreetName(addressLower, cityName)) {
+          console.log(`Found distant city/region: ${cityName} in address: ${address}`);
+          return true;
+        }
+      }
+    }
   }
   
   return false;
 }
 
-// НОВАЯ ФУНКЦИЯ: Улучшенная фильтрация по регионам с сохранением исключенных
-function filterByRegion(csvContent) {
-  const lines = csvContent.split(/\r\n|\n|\r/);
-  const headers = lines[0];
-  const headerArray = parseCSVRow(headers);
+// Проверяем, является ли найденное название улицей
+function isStreetName(addressLower, cityName) {
+  const streetIndicators = [
+    'ул', 'улица', 'пр-кт', 'проспект', 'б-р', 'бульвар', 'пер', 'переулок',
+    'ш', 'шоссе', 'наб', 'набережная', 'пл', 'площадь', 'тупик', 'проезд'
+  ];
   
-  // Ищем колонку с адресами (приоритет)
-  let addressIndex = headerArray.findIndex(h => 
-    h && (h.toLowerCase().includes('адрес') || 
-          h.toLowerCase().includes('address') ||
-          h.toLowerCase().includes('местоположение') ||
-          h.toLowerCase().includes('location'))
-  );
+  // Ищем индикаторы улицы рядом с названием города
+  const cityIndex = addressLower.indexOf(cityName);
+  if (cityIndex === -1) return false;
   
-  // Если не нашли колонку адресов, ищем регион
-  if (addressIndex === -1) {
-    addressIndex = headerArray.findIndex(h => 
-      h && (h.toLowerCase().includes('регион') || 
-            h.toLowerCase().includes('region') ||
-            h.toLowerCase().includes('город') ||
-            h.toLowerCase().includes('city'))
-    );
-  }
+  // Проверяем текст до и после названия города
+  const before = addressLower.substring(Math.max(0, cityIndex - 20), cityIndex);
+  const after = addressLower.substring(cityIndex + cityName.length, cityIndex + cityName.length + 20);
   
-  console.log(`Address/Region column index: ${addressIndex}`);
-  
-  if (addressIndex === -1) {
-    console.log('No address/region column found, returning original data');
-    return {
-      filteredContent: csvContent,
-      excludedRows: [],
-      excludedCount: 0
-    };
-  }
-  
-  const filteredLines = [headers];
-  const excludedRows = [];
-  let filteredCount = 0;
-  let totalCount = 0;
-  
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === '') continue;
-    
-    totalCount++;
-    const row = parseCSVRow(lines[i]);
-    const addressValue = row[addressIndex] ? row[addressIndex].trim() : '';
-    
-    if (isAddressInMoscowRegion(addressValue)) {
-      filteredLines.push(lines[i]);
-      filteredCount++;
-    } else {
-      // Сохраняем исключенную строку с причиной
-      excludedRows.push({
-        rowNumber: totalCount,
-        address: addressValue,
-        fullRow: lines[i],
-        reason: getExclusionReason(addressValue)
-      });
-      console.log(`Filtered out: ${addressValue}`);
+  for (const indicator of streetIndicators) {
+    if (before.includes(indicator) || after.includes(indicator)) {
+      return true;
     }
   }
   
-  console.log(`Regional filtering: ${totalCount} -> ${filteredCount} rows (removed ${totalCount - filteredCount})`);
-  
-  return {
-    filteredContent: filteredLines.join('\n'),
-    excludedRows: excludedRows,
-    excludedCount: excludedRows.length
-  };
-}
-
-// НОВАЯ ФУНКЦИЯ: Определение причины исключения
-function getExclusionReason(address) {
-  if (!address || typeof address !== 'string') {
-    return 'Пустой адрес';
-  }
-  
-  const normalizedAddress = address.toLowerCase().trim();
-  
-  // Проверяем запрещенные регионы
-  for (const forbidden of FORBIDDEN_REGIONS) {
-    if (normalizedAddress.includes(forbidden)) {
-      return `Дальний регион: ${forbidden}`;
-    }
-  }
-  
-  return 'Не определен как Москва/Подмосковье';
+  return false;
 }
 
 // Парсим CSV и извлекаем уникальные значения
@@ -268,17 +204,19 @@ function parseCSVAndExtractValues(csvContent) {
   );
   
   const carAgeIndex = headers.findIndex(h => 
-    h.toLowerCase().includes('флаг нового авто') || 
-    h.toLowerCase().includes('flag') ||
-    h.toLowerCase().includes('новое') ||
-    h.toLowerCase().includes('старое')
+    h.toLowerCase().includes('флаг нового авто') || h.toLowerCase().includes('flag')
   );
   
-  console.log('Column indices:', { addressTypeIndex, carAgeIndex });
+  const regionIndex = headers.findIndex(h => 
+    h.toLowerCase().includes('регион') || h.toLowerCase().includes('region')
+  );
+  
+  console.log('Column indices:', { addressTypeIndex, carAgeIndex, regionIndex });
   
   // Извлекаем уникальные значения
   const addressTypes = new Set();
   const carAges = new Set();
+  const regions = new Set();
   
   for (let i = 1; i < lines.length; i++) {
     if (lines[i].trim() === '') continue;
@@ -286,26 +224,26 @@ function parseCSVAndExtractValues(csvContent) {
     const row = parseCSVRow(lines[i]);
     
     if (addressTypeIndex !== -1 && row[addressTypeIndex]) {
-      const value = row[addressTypeIndex].trim();
-      if (value && value !== '') {
-        addressTypes.add(value);
-      }
+      addressTypes.add(row[addressTypeIndex].trim());
     }
     
     if (carAgeIndex !== -1 && row[carAgeIndex]) {
-      const value = row[carAgeIndex].trim();
-      if (value && value !== '') {
-        carAges.add(value);
-      }
+      carAges.add(row[carAgeIndex].trim());
+    }
+    
+    if (regionIndex !== -1 && row[regionIndex]) {
+      regions.add(row[regionIndex].trim());
     }
   }
   
   return {
     addressTypes: Array.from(addressTypes).filter(v => v && v !== ''),
     carAges: Array.from(carAges).filter(v => v && v !== ''),
+    regions: Array.from(regions).filter(v => v && v !== ''),
     headers,
     addressTypeIndex,
-    carAgeIndex
+    carAgeIndex,
+    regionIndex
   };
 }
 
@@ -335,6 +273,56 @@ function parseCSVRow(line) {
   
   result.push(current.trim());
   return result;
+}
+
+// ИСПРАВЛЕННАЯ ФУНКЦИЯ: Фильтрация данных по регионам через анализ адресов
+function filterByRegion(csvContent) {
+  const lines = csvContent.split(/\r\n|\n|\r/);
+  const headers = lines[0];
+  const filteredLines = [headers];
+  
+  // Ищем колонку с адресами
+  const headerArray = headers.split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
+  const addressIndex = headerArray.findIndex(h => 
+    h.includes('адрес') || h.includes('address') || h.includes('местонахождение') || h.includes('location')
+  );
+  
+  console.log('Address column index:', addressIndex);
+  console.log('Headers:', headerArray);
+  
+  if (addressIndex === -1) {
+    console.log('Address column not found, returning original data');
+    return csvContent;
+  }
+  
+  let totalRows = 0;
+  let filteredRows = 0;
+  let excludedRows = 0;
+  
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === '') continue;
+    
+    totalRows++;
+    const row = parseCSVRow(lines[i]);
+    const address = row[addressIndex] ? row[addressIndex].trim() : '';
+    
+    // Проверяем, содержит ли адрес дальний город или регион
+    if (containsDistantCity(address)) {
+      excludedRows++;
+      console.log(`Excluding row with distant city: ${address}`);
+      continue; // Исключаем эту строку
+    }
+    
+    filteredRows++;
+    filteredLines.push(lines[i]);
+  }
+  
+  console.log(`Region filtering results:`);
+  console.log(`Total rows processed: ${totalRows}`);
+  console.log(`Rows kept: ${filteredRows}`);
+  console.log(`Rows excluded: ${excludedRows}`);
+  
+  return filteredLines.join('\n');
 }
 
 // Применение фильтров к CSV
@@ -372,59 +360,6 @@ function applyFilters(csvContent, selectedAddressTypes, selectedCarAges, columnI
   
   console.log(`Applied filters: ${lines.length - 1} -> ${filteredLines.length - 1} rows`);
   return filteredLines.join('\n');
-}
-
-// НОВАЯ ФУНКЦИЯ: Создание отчета об исключенных данных
-function createExcludedDataReport(excludedRows) {
-  if (excludedRows.length === 0) {
-    return 'Нет исключенных записей.';
-  }
-  
-  let report = `📋 **Отчет об исключенных записях (${excludedRows.length} шт.)**\n\n`;
-  
-  // Группируем по причинам
-  const groupedByReason = {};
-  excludedRows.forEach(row => {
-    if (!groupedByReason[row.reason]) {
-      groupedByReason[row.reason] = [];
-    }
-    groupedByReason[row.reason].push(row);
-  });
-  
-  // Формируем отчет по группам
-  Object.keys(groupedByReason).forEach(reason => {
-    const rows = groupedByReason[reason];
-    report += `🚫 **${reason}** (${rows.length} записей):\n`;
-    
-    rows.slice(0, 10).forEach((row, index) => { // Показываем только первые 10
-      report += `${index + 1}. ${row.address}\n`;
-    });
-    
-    if (rows.length > 10) {
-      report += `... и еще ${rows.length - 10} записей\n`;
-    }
-    
-    report += '\n';
-  });
-  
-  return report;
-}
-
-// НОВАЯ ФУНКЦИЯ: Создание CSV файла с исключенными данными
-function createExcludedDataCSV(excludedRows) {
-  if (excludedRows.length === 0) {
-    return null;
-  }
-  
-  let csvContent = 'Номер строки,Адрес,Причина исключения\n';
-  
-  excludedRows.forEach(row => {
-    const escapedAddress = row.address.replace(/"/g, '""');
-    const escapedReason = row.reason.replace(/"/g, '""');
-    csvContent += `${row.rowNumber},"${escapedAddress}","${escapedReason}"\n`;
-  });
-  
-  return csvContent;
 }
 
 // Отправляем CSV на обработку в Apps Script
@@ -560,7 +495,7 @@ async function handleStart(chatId) {
   userData.delete(chatId);
   
   const welcomeMessage = `
-🚗 **Добро пожаловать в Rozysk Avto Bot v6.2!**
+🚗 **Добро пожаловать в Rozysk Avto Bot v6.1!**
 
 Этот бот поможет вам обработать файлы для розыска автомобилей:
 
@@ -570,16 +505,11 @@ async function handleStart(chatId) {
 • Разделять большие файлы на части по 2000 строк
 • Добавлять геопривязку для карт
 
-🎯 **Улучшенная фильтрация:**
-• **Умная фильтрация по регионам** (автоматически исключает дальние города)
-• Выбор типов адресов
-• Фильтр по возрасту автомобилей
-• Возможность работы без фильтров
-
-🔍 **Новое в v6.2:**
-• **Просмотр исключенных данных** - можете посмотреть, что именно было отфильтровано
-• Отчет с причинами исключения
-• Экспорт исключенных данных в CSV
+🎯 **Умная фильтрация:**
+• Автоматическое исключение дальних регионов
+• Сохранение адресов с названиями улиц (Челябинская ул., Волгоградский пр-кт)
+• Исключение только городов и областей вне Московского региона
+• Выбор типов адресов и возраста автомобилей
 
 📎 **Поддерживаемые форматы:**
 • CSV (.csv)
@@ -634,16 +564,13 @@ async function handleDocument(chatId, document) {
       csvContent = convertExcelToCSV(fileBuffer, fileName);
     }
 
-    await bot.editMessageText('🌍 Анализирую адреса и фильтрую по регионам...', {
+    await bot.editMessageText('🌍 Анализирую адреса и исключаю дальние регионы...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
 
-    // Подсчитываем строки до фильтрации
-    const originalRowCount = csvContent.split('\n').length - 1;
-
-    // Фильтруем по регионам и сохраняем исключенные данные
-    const filterResult = filterByRegion(csvContent);
+    // Фильтруем по регионам через анализ адресов
+    const filteredByCityContent = filterByRegion(csvContent);
 
     await bot.editMessageText('📊 Анализирую данные для фильтров...', {
       chat_id: chatId,
@@ -651,14 +578,13 @@ async function handleDocument(chatId, document) {
     });
 
     // Извлекаем уникальные значения
-    const columnInfo = parseCSVAndExtractValues(filterResult.filteredContent);
+    const columnInfo = parseCSVAndExtractValues(filteredByCityContent);
 
     // Сохраняем данные пользователя
     userData.set(chatId, {
       fileName,
       originalCsvContent: csvContent,
-      filteredCsvContent: filterResult.filteredContent,
-      excludedRows: filterResult.excludedRows,
+      filteredCsvContent: filteredByCityContent,
       columnInfo,
       selectedAddressTypes: [],
       selectedCarAges: []
@@ -666,28 +592,27 @@ async function handleDocument(chatId, document) {
 
     await bot.deleteMessage(chatId, processingMsg.message_id);
 
+    // Получаем количество строк до и после фильтрации
+    const originalRowsCount = csvContent.split('\n').length - 1;
+    const filteredRowsCount = filteredByCityContent.split('\n').length - 1;
+
     // Спрашиваем о фильтрах
     const filterKeyboard = {
       inline_keyboard: [
         [
           { text: '🎯 Настроить фильтры', callback_data: 'setup_filters' },
           { text: '📤 Без фильтров', callback_data: 'no_filters' }
-        ],
-        [
-          { text: '🔍 Показать исключенные', callback_data: 'show_excluded' }
         ]
       ]
     };
-
-    const filteredRowCount = filterResult.filteredContent.split('\n').length - 1;
 
     await bot.sendMessage(chatId, `
 ✅ **Файл загружен и обработан!**
 
 📊 **Статистика фильтрации по регионам:**
-• Исходных строк: ${originalRowCount}
-• После фильтрации: ${filteredRowCount}
-• Исключено дальних регионов: ${filterResult.excludedCount}
+• Исходных строк: ${originalRowsCount}
+• После исключения дальних регионов: ${filteredRowsCount}
+• Исключено строк: ${originalRowsCount - filteredRowsCount}
 
 🎯 **Дополнительные фильтры:**
 • Найдено типов адресов: ${columnInfo.addressTypes.length}
@@ -725,44 +650,7 @@ async function handleCallbackQuery(query) {
       return;
     }
 
-    if (data === 'show_excluded') {
-      // Показать исключенные данные
-      if (userInfo.excludedRows && userInfo.excludedRows.length > 0) {
-        const report = createExcludedDataReport(userInfo.excludedRows);
-        
-        // Отправляем отчет
-        await bot.sendMessage(chatId, report, { parse_mode: 'Markdown' });
-        
-        // Создаем и отправляем CSV с исключенными данными
-        const excludedCSV = createExcludedDataCSV(userInfo.excludedRows);
-        if (excludedCSV) {
-          const buffer = Buffer.from(excludedCSV, 'utf8');
-          await sendDocumentSafe(chatId, buffer, 'исключенные_записи.csv');
-        }
-        
-        // Возвращаем кнопки выбора
-        const filterKeyboard = {
-          inline_keyboard: [
-            [
-              { text: '🎯 Настроить фильтры', callback_data: 'setup_filters' },
-              { text: '📤 Без фильтров', callback_data: 'no_filters' }
-            ],
-            [
-              { text: '🔍 Показать исключенные', callback_data: 'show_excluded' }
-            ]
-          ]
-        };
-        
-        await bot.sendMessage(chatId, '🎯 **Выберите действие:**', { 
-          parse_mode: 'Markdown',
-          reply_markup: filterKeyboard
-        });
-        
-      } else {
-        await bot.answerCallbackQuery(query.id, { text: 'Нет исключенных записей' });
-      }
-      
-    } else if (data === 'no_filters') {
+    if (data === 'no_filters') {
       // Обработка без фильтров
       await processAndSendFiles(chatId, userInfo.filteredCsvContent, userInfo.fileName, messageId);
       
@@ -800,9 +688,6 @@ async function handleCallbackQuery(query) {
           [
             { text: '🎯 Настроить фильтры', callback_data: 'setup_filters' },
             { text: '📤 Без фильтров', callback_data: 'no_filters' }
-          ],
-          [
-            { text: '🔍 Показать исключенные', callback_data: 'show_excluded' }
           ]
         ]
       };
@@ -886,9 +771,6 @@ async function handleCallbackQuery(query) {
           [
             { text: '🎯 Настроить фильтры', callback_data: 'setup_filters' },
             { text: '📤 Без фильтров', callback_data: 'no_filters' }
-          ],
-          [
-            { text: '🔍 Показать исключенные', callback_data: 'show_excluded' }
           ]
         ]
       };
@@ -976,7 +858,7 @@ async function processAndSendFiles(chatId, csvContent, fileName, messageId, with
     if (result.success) {
       await bot.deleteMessage(chatId, messageId);
 
-      const filterInfo = withFilters ? '\n🎯 **С примененными фильтрами**' : '\n📤 **Без дополнительных фильтров**';
+      const filterInfo = withFilters ? '\n🎯 **С примененными фильтрами**' : '\n📤 **Только с региональной фильтрацией**';
       
       const resultMessage = `
 ✅ **Файл успешно обработан!**${filterInfo}
@@ -1016,12 +898,11 @@ async function processAndSendFiles(chatId, csvContent, fileName, messageId, with
         }
       }
 
-      // Кнопки для повторного выбора фильтров и просмотра исключенных
+      // Кнопка для повторного выбора фильтров
       const reselectionKeyboard = {
         inline_keyboard: [
           [
-            { text: '🔄 Перевыбрать фильтры', callback_data: 'reselect_filters' },
-            { text: '🔍 Показать исключенные', callback_data: 'show_excluded' }
+            { text: '🔄 Перевыбрать фильтры', callback_data: 'reselect_filters' }
           ]
         ]
       };
@@ -1085,15 +966,15 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Rozysk Avto Bot v6.2</title>
+      <title>Rozysk Avto Bot v6.1</title>
       <style>
         body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #f0f0f0; }
-        .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .container { max-width: 700px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         .status { color: #4CAF50; font-size: 24px; font-weight: bold; }
         .info { color: #666; margin-top: 20px; line-height: 1.6; }
         .version { background: #e3f2fd; padding: 15px; border-radius: 5px; margin: 20px 0; }
         .features { background: #f3e5f5; padding: 15px; border-radius: 5px; margin: 10px 0; }
-        .new { background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 10px 0; }
+        .smart { background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 10px 0; }
       </style>
     </head>
     <body>
@@ -1101,18 +982,18 @@ app.get('/', (req, res) => {
         <h1>🚗 Rozysk Avto Bot</h1>
         <div class="status">✅ Сервис работает!</div>
         <div class="version">
-          <strong>Версия 6.2 - Контроль фильтрации</strong><br>
-          • Анализ адресов вместо только колонки "регион"<br>
-          • Расширенный список городов Подмосковья<br>
-          • Исключение дальних регионов России и СНГ<br>
-          • Интеллектуальное определение московских адресов
+          <strong>Версия 6.1 - Умная фильтрация адресов</strong><br>
+          • Интеллектуальный анализ адресов<br>
+          • Исключение дальних городов и регионов<br>
+          • Сохранение названий улиц<br>
+          • Система фильтров по типам и возрасту авто
         </div>
-        <div class="new">
-          <strong>🔍 Новое в v6.2:</strong><br>
-          • Кнопка "Показать исключенные" - посмотреть что было отфильтровано<br>
-          • Отчет с причинами исключения записей<br>
-          • Экспорт исключенных данных в CSV файл<br>
-          • Группировка исключенных по причинам
+        <div class="smart">
+          <strong>🧠 Умная фильтрация:</strong><br>
+          • Исключает: "г. Новосибирск", "Челябинская область"<br>
+          • Сохраняет: "ул. Челябинская", "Волгоградский пр-кт"<br>
+          • Автоматически определяет названия городов<br>
+          • Отличает улицы от городов по контексту
         </div>
         <div class="features">
           <strong>🎯 Возможности:</strong><br>
@@ -1120,8 +1001,7 @@ app.get('/', (req, res) => {
           • Возможность работы без фильтров<br>
           • Кнопка "Назад" на каждом шаге<br>
           • Повторный выбор фильтров<br>
-          • Автоматическая умная фильтрация по регионам<br>
-          • Полный контроль фильтрации
+          • Подробная статистика фильтрации
         </div>
         <div class="info">
           <p><strong>Telegram:</strong> <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
@@ -1137,17 +1017,17 @@ app.get('/', (req, res) => {
 app.get('/doget', (req, res) => {
   res.json({ 
     status: 'ok', 
-    message: 'Rozysk Avto Bot v6.2 with excluded data viewing',
+    message: 'Rozysk Avto Bot v6.1 with smart address filtering is running',
     webhook: WEBHOOK_URL,
     timestamp: new Date().toISOString(),
     features: [
-      'View excluded data functionality',
-      'Exclusion reasons reporting',
-      'Excluded data CSV export',
-      'Improved regional filtering',
-      'Address analysis',
-      'Intelligent Moscow address detection',
-      'Full filtering control'
+      'Smart address analysis',
+      'Distant city exclusion',
+      'Street name preservation',
+      'Address type filtering',
+      'Car age filtering',
+      'Interactive UI',
+      'Context-aware filtering'
     ]
   });
 });
@@ -1185,11 +1065,11 @@ process.on('SIGINT', async () => {
 
 // Запуск сервера
 app.listen(port, async () => {
-  console.log(`🚀 Server v6.2 running on port ${port}`);
+  console.log(`🚀 Server v6.1 running on port ${port}`);
   console.log(`📡 Webhook URL: ${WEBHOOK_URL}`);
-  console.log(`🔍 Features: Excluded data viewing, Regional filtering, Address analysis, Full control`);
+  console.log(`🧠 Smart filtering: Address analysis, City exclusion, Street preservation`);
   
   await setupWebhook();
   
-  console.log('✅ Telegram bot v6.2 with excluded data viewing is ready!');
+  console.log('✅ Telegram bot v6.1 with smart filtering is ready!');
 });
