@@ -29,7 +29,7 @@ app.post('/webhook', async (req, res) => {
       headers: { 
         'Content-Type': 'application/json'
       },
-      timeout: 10000
+      timeout: 30000
     }).then(response => {
       console.log('Successfully sent to Google Apps Script');
     }).catch(error => {
