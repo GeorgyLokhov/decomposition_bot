@@ -12,7 +12,15 @@ const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
 const WEBHOOK_URL = process.env.WEBHOOK_URL || `https://rozysk-avto-bot.onrender.com/webhook/${BOT_TOKEN}`;
 
 // Создаем бота БЕЗ polling для продакшена
-const bot = new TelegramBot(BOT_TOKEN, { polling: false });
+const bot = new TelegramBot(BOT_TOKEN, { 
+  polling: false,
+  request: {
+    agentOptions: {
+      keepAlive: true,
+      family: 4
+    }
+  }
+});
 
 // Middleware
 app.use(express.json({ limit: '50mb' }));
@@ -117,10 +125,31 @@ async function processCSVInAppsScript(csvContent, fileName) {
   }
 }
 
+// ИСПРАВЛЕННАЯ ФУНКЦИЯ: Отправка файла с правильным MIME типом
+async function sendDocumentSafe(chatId, buffer, filename) {
+  try {
+    console.log(`Sending document: ${filename}, size: ${buffer.length} bytes`);
+    
+    // Отправляем документ с явным указанием contentType
+    await bot.sendDocument(chatId, buffer, {
+      caption: `📄 ${filename}`
+    }, {
+      filename: filename,
+      contentType: 'text/csv'
+    });
+    
+    console.log('Document sent successfully');
+    
+  } catch (error) {
+    console.error('Error sending document:', error);
+    throw error;
+  }
+}
+
 // Обработчик команды /start
 async function handleStart(chatId) {
   const welcomeMessage = `
-🚗 **Добро пожаловать в Rozysk Avto Bot v5.0!**
+🚗 **Добро пожаловать в Rozysk Avto Bot v5.1!**
 
 Этот бот поможет вам обработать файлы для розыска автомобилей:
 
@@ -136,10 +165,10 @@ async function handleStart(chatId) {
 
 📤 **Просто отправьте мне файл для обработки!**
 
-🔧 **Что нового:**
-• Улучшена обработка Excel файлов
-• Исправлены проблемы с конвертацией
-• Более быстрая обработка данных
+🔧 **Исправления v5.1:**
+• Исправлена ошибка отправки файлов
+• Улучшена совместимость с Telegram API
+• Более стабильная работа
   `;
   
   await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
@@ -214,7 +243,7 @@ async function handleDocument(chatId, document) {
 • Всего строк: ${result.totalRows}
 • Создано частей: ${result.partsCount}
 
-📁 **Получаю обработанные файлы...**
+📁 **Отправляю обработанные файлы...**
       `;
 
       await bot.sendMessage(chatId, resultMessage, { parse_mode: 'Markdown' });
@@ -234,14 +263,12 @@ async function handleDocument(chatId, document) {
 
       await bot.sendMessage(chatId, instructionMessage, { parse_mode: 'Markdown' });
 
-      // Отправляем файлы
+      // Отправляем файлы с правильным MIME типом
       for (let i = 0; i < result.files.length; i++) {
         const file = result.files[i];
         const buffer = Buffer.from(file.content, 'base64');
         
-        await bot.sendDocument(chatId, buffer, {
-          filename: file.name
-        });
+        await sendDocumentSafe(chatId, buffer, file.name);
 
         // Небольшая задержка между отправками
         if (i < result.files.length - 1) {
@@ -309,13 +336,14 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Rozysk Avto Bot v5.0</title>
+      <title>Rozysk Avto Bot v5.1</title>
       <style>
         body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #f0f0f0; }
         .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         .status { color: #4CAF50; font-size: 24px; font-weight: bold; }
         .info { color: #666; margin-top: 20px; line-height: 1.6; }
         .version { background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 20px 0; }
+        .fix { background: #f3e5f5; padding: 10px; border-radius: 5px; margin: 10px 0; }
       </style>
     </head>
     <body>
@@ -323,10 +351,16 @@ app.get('/', (req, res) => {
         <h1>🚗 Rozysk Avto Bot</h1>
         <div class="status">✅ Сервис работает!</div>
         <div class="version">
-          <strong>Версия 5.0</strong><br>
+          <strong>Версия 5.1</strong><br>
           • Улучшена обработка Excel файлов<br>
           • Конвертация на сервере<br>
           • Исправлены ошибки Apps Script
+        </div>
+        <div class="fix">
+          <strong>🔧 Исправления:</strong><br>
+          • Исправлена ошибка EFATAL<br>
+          • Правильная отправка CSV файлов<br>
+          • Улучшена совместимость с Telegram API
         </div>
         <div class="info">
           <p><strong>Telegram:</strong> <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p>
@@ -342,13 +376,14 @@ app.get('/', (req, res) => {
 app.get('/doget', (req, res) => {
   res.json({ 
     status: 'ok', 
-    message: 'Rozysk Avto Bot v5.0 is running',
+    message: 'Rozysk Avto Bot v5.1 is running',
     webhook: WEBHOOK_URL,
     timestamp: new Date().toISOString(),
     features: [
       'Excel conversion on server',
-      'Improved error handling',
-      'Better performance'
+      'Fixed EFATAL error',
+      'Proper CSV file sending',
+      'Better Telegram API compatibility'
     ]
   });
 });
@@ -386,12 +421,13 @@ process.on('SIGINT', async () => {
 
 // Запуск сервера
 app.listen(port, async () => {
-  console.log(`🚀 Server v5.0 running on port ${port}`);
+  console.log(`🚀 Server v5.1 running on port ${port}`);
   console.log(`📡 Webhook URL: ${WEBHOOK_URL}`);
   console.log(`🔧 Excel conversion: ON SERVER`);
+  console.log(`✅ EFATAL error: FIXED`);
   
   // Устанавливаем webhook
   await setupWebhook();
   
-  console.log('✅ Telegram bot v5.0 is ready!');
+  console.log('✅ Telegram bot v5.1 is ready!');
 });
