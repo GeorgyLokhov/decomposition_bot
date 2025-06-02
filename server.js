@@ -40,7 +40,7 @@ const STATES = {
   PROCESSING: 'processing'
 };
 
-// Список дальних городов и регионов для исключения (ТОЛЬКО города и регионы, БЕЗ названий улиц)
+// Список дальних городов и регионов для исключения
 const DISTANT_CITIES_AND_REGIONS = [
   // Крупные города
   'новосибирск', 'екатеринбург', 'нижний новгород', 'казань', 'челябинск', 'омск', 'самара',
@@ -51,7 +51,7 @@ const DISTANT_CITIES_AND_REGIONS = [
   'иваново', 'магнитогорск', 'тверь', 'ставрополь', 'белгород', 'сочи', 'нижний тагил',
   'астрахань', 'владимир', 'архангельск', 'тула', 'смоленск', 'кострома', 'мурманск',
   
-  // Регионы и области (БЕЗ "ская" и других окончаний улиц)
+  // Регионы и области
   'алтайский', 'амурская', 'архангельская', 'астраханская', 'белгородская', 'брянская',
   'владимирская', 'волгоградская', 'вологодская', 'воронежская', 'ивановская', 'иркутская',
   'калининградская', 'калужская', 'кемеровская', 'кировская', 'костромская', 'краснодарский',
@@ -105,7 +105,7 @@ function convertExcelToCSV(buffer, fileName) {
   }
 }
 
-// ИСПРАВЛЕННАЯ ФУНКЦИЯ: Проверяем, содержит ли адрес дальний город или регион
+// Проверяем, содержит ли адрес дальний город или регион
 function containsDistantCity(address) {
   if (!address) return false;
   
@@ -113,32 +113,30 @@ function containsDistantCity(address) {
   
   // Проверяем явные указания на города с префиксами
   const explicitCityPatterns = [
-    /г\.?\s+([а-яё\-\s]+?)(?=,|$|\s+обл|\s+край)/gi,        // г. Название
-    /город\s+([а-яё\-\s]+?)(?=,|$|\s+обл|\s+край)/gi,      // город Название
+    /г\.?\s+([а-яё\-\s]+?)(?=,|$|\s+обл|\s+край)/gi,
+    /город\s+([а-яё\-\s]+?)(?=,|$|\s+обл|\s+край)/gi,
   ];
   
   // Проверяем области и края
   const regionPatterns = [
-    /([а-яё\-\s]+?)\s+область/gi,           // Название область
-    /([а-яё\-\s]+?)\s+обл\.?(?=,|$)/gi,     // Название обл.
-    /([а-яё\-\s]+?)\s+край/gi,              // Название край  
-    /([а-яё\-\s]+?)\s+кр\.?(?=,|$)/gi,      // Название кр.
-    /([а-яё\-\s]+?)\s+республика/gi,        // Название республика
-    /республика\s+([а-яё\-\s]+)/gi,         // республика Название
+    /([а-яё\-\s]+?)\s+область/gi,
+    /([а-яё\-\s]+?)\s+обл\.?(?=,|$)/gi,
+    /([а-яё\-\s]+?)\s+край/gi,
+    /([а-яё\-\s]+?)\s+кр\.?(?=,|$)/gi,
+    /([а-яё\-\s]+?)\s+республика/gi,
+    /республика\s+([а-яё\-\s]+)/gi,
   ];
   
-  // Объединяем все паттерны для поиска регионов
   const allRegionPatterns = [...explicitCityPatterns, ...regionPatterns];
   
   for (const pattern of allRegionPatterns) {
     let match;
-    pattern.lastIndex = 0; // Сбрасываем индекс для корректной работы
+    pattern.lastIndex = 0;
     while ((match = pattern.exec(addressLower)) !== null) {
       const foundName = match[1].trim().replace(/\s+/g, ' ');
       
-      if (foundName.length < 3) continue; // Слишком короткое название
+      if (foundName.length < 3) continue;
       
-      // Проверяем, есть ли это название в списке дальних регионов
       for (const distantRegion of DISTANT_CITIES_AND_REGIONS) {
         if (foundName === distantRegion || 
             foundName.includes(distantRegion) || 
@@ -150,12 +148,9 @@ function containsDistantCity(address) {
     }
   }
   
-  // Отдельная проверка для адресов без явных указателей города
-  // Проверяем только если в адресе НЕТ указаний на Москву
   const hasMoscowIndicator = /москва|московская|мо|м\.о\./i.test(addressLower);
   
   if (!hasMoscowIndicator) {
-    // Ищем названия городов в конце адреса или после запятых
     const cityInAddressPattern = /(?:^|,)\s*([а-яё\-\s]{4,})(?=,|$)/gi;
     
     let match;
@@ -163,7 +158,6 @@ function containsDistantCity(address) {
     while ((match = cityInAddressPattern.exec(addressLower)) !== null) {
       const potentialCity = match[1].trim();
       
-      // Исключаем очевидные не-города
       if (potentialCity.includes('дом') || 
           potentialCity.includes('корп') || 
           potentialCity.includes('кв') ||
@@ -173,7 +167,6 @@ function containsDistantCity(address) {
         continue;
       }
       
-      // Проверяем в списке дальних городов
       for (const distantCity of DISTANT_CITIES_AND_REGIONS) {
         if (potentialCity === distantCity) {
           console.log(`Found distant city without Moscow indicator: ${potentialCity} in address: ${address}`);
@@ -191,7 +184,6 @@ function parseCSVAndExtractValues(csvContent) {
   const lines = csvContent.split(/\r\n|\n|\r/);
   const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
   
-  // Находим индексы нужных колонок
   const addressTypeIndex = headers.findIndex(h => 
     h.toLowerCase().includes('тип адреса') || h.toLowerCase().includes('type')
   );
@@ -206,7 +198,6 @@ function parseCSVAndExtractValues(csvContent) {
   
   console.log('Column indices:', { addressTypeIndex, carAgeIndex, regionIndex });
   
-  // Извлекаем уникальные значения
   const addressTypes = new Set();
   const carAges = new Set();
   const regions = new Set();
@@ -268,20 +259,18 @@ function parseCSVRow(line) {
   return result;
 }
 
-// ИСПРАВЛЕННАЯ ФУНКЦИЯ: Фильтрация данных по регионам через анализ адресов
+// Фильтрация данных по регионам через анализ адресов
 function filterByRegion(csvContent) {
   const lines = csvContent.split(/\r\n|\n|\r/);
   const headers = lines[0];
   const filteredLines = [headers];
   
-  // Ищем колонку с адресами
   const headerArray = headers.split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
   const addressIndex = headerArray.findIndex(h => 
     h.includes('адрес') || h.includes('address') || h.includes('местонахождение') || h.includes('location')
   );
   
   console.log('Address column index:', addressIndex);
-  console.log('Headers:', headerArray);
   
   if (addressIndex === -1) {
     console.log('Address column not found, returning original data');
@@ -299,11 +288,10 @@ function filterByRegion(csvContent) {
     const row = parseCSVRow(lines[i]);
     const address = row[addressIndex] ? row[addressIndex].trim() : '';
     
-    // Проверяем, содержит ли адрес дальний город или регион
     if (containsDistantCity(address)) {
       excludedRows++;
       console.log(`Excluding row with distant city: ${address}`);
-      continue; // Исключаем эту строку
+      continue;
     }
     
     filteredRows++;
@@ -330,7 +318,6 @@ function applyFilters(csvContent, selectedAddressTypes, selectedCarAges, columnI
     const row = parseCSVRow(lines[i]);
     let includeRow = true;
     
-    // Фильтр по типу адреса
     if (selectedAddressTypes.length > 0 && columnInfo.addressTypeIndex !== -1) {
       const addressType = row[columnInfo.addressTypeIndex] ? row[columnInfo.addressTypeIndex].trim() : '';
       if (!selectedAddressTypes.includes(addressType)) {
@@ -338,7 +325,6 @@ function applyFilters(csvContent, selectedAddressTypes, selectedCarAges, columnI
       }
     }
     
-    // Фильтр по возрасту авто
     if (selectedCarAges.length > 0 && columnInfo.carAgeIndex !== -1) {
       const carAge = row[columnInfo.carAgeIndex] ? row[columnInfo.carAgeIndex].trim() : '';
       if (!selectedCarAges.includes(carAge)) {
@@ -355,8 +341,31 @@ function applyFilters(csvContent, selectedAddressTypes, selectedCarAges, columnI
   return filteredLines.join('\n');
 }
 
-// Отправляем CSV на обработку в Apps Script
-async function processCSVInAppsScript(csvContent, fileName) {
+// НОВАЯ ФУНКЦИЯ: Генерация информации о фильтрах для названий файлов
+function generateFilterInfo(selectedAddressTypes, selectedCarAges) {
+  const filterParts = [];
+  
+  if (selectedAddressTypes.length > 0) {
+    if (selectedAddressTypes.length === 1) {
+      filterParts.push(`${selectedAddressTypes[0]}`);
+    } else {
+      filterParts.push(`${selectedAddressTypes.length} адресов`);
+    }
+  }
+  
+  if (selectedCarAges.length > 0) {
+    if (selectedCarAges.length === 1) {
+      filterParts.push(`${selectedCarAges[0]} авто`);
+    } else {
+      filterParts.push(`${selectedCarAges.length} типов авто`);
+    }
+  }
+  
+  return filterParts.join(' + ');
+}
+
+// ОБНОВЛЕННАЯ ФУНКЦИЯ: Отправляем CSV на обработку в Apps Script с информацией о фильтрах
+async function processCSVInAppsScript(csvContent, fileName, filterInfo = null) {
   try {
     console.log(`Sending CSV to Apps Script: ${fileName}, length: ${csvContent.length}`);
     
@@ -365,7 +374,8 @@ async function processCSVInAppsScript(csvContent, fileName) {
     const response = await axios.post(APPS_SCRIPT_URL, {
       action: 'process_csv',
       csvContent: base64Content,
-      fileName: fileName
+      fileName: fileName,
+      filterInfo: filterInfo // Передаем информацию о фильтрах
     }, {
       headers: {
         'Content-Type': 'application/json'
@@ -408,7 +418,6 @@ function createAddressTypeKeyboard(addressTypes, selectedTypes = []) {
   for (let i = 0; i < addressTypes.length; i += 2) {
     const row = [];
     
-    // Первая кнопка в ряду
     const type1 = addressTypes[i];
     const isSelected1 = selectedTypes.includes(type1);
     row.push({
@@ -416,7 +425,6 @@ function createAddressTypeKeyboard(addressTypes, selectedTypes = []) {
       callback_data: `addr_${i}`
     });
     
-    // Вторая кнопка в ряду (если есть)
     if (i + 1 < addressTypes.length) {
       const type2 = addressTypes[i + 1];
       const isSelected2 = selectedTypes.includes(type2);
@@ -429,7 +437,6 @@ function createAddressTypeKeyboard(addressTypes, selectedTypes = []) {
     keyboard.push(row);
   }
   
-  // Кнопки управления
   keyboard.push([
     { text: '🔄 Сбросить все', callback_data: 'addr_clear' },
     { text: '✅ Выбрать все', callback_data: 'addr_all' }
@@ -482,40 +489,28 @@ function createCarAgeKeyboard(carAges, selectedAges = []) {
   return { inline_keyboard: keyboard };
 }
 
-// Обработчик команды /start
+// ОБНОВЛЕННЫЙ обработчик команды /start
 async function handleStart(chatId) {
   userStates.set(chatId, STATES.IDLE);
   userData.delete(chatId);
   
   const welcomeMessage = `
-🚗 **Добро пожаловать в Rozysk Avto Bot v6.2!**
+🚗 **Добро пожаловать в Rozysk Avto Bot v6.2**
 
 Этот бот поможет вам обработать файлы для розыска автомобилей:
 
 ✅ **Основные функции:**
-• Очищать адреса от лишней информации
-• Извлекать номерные знаки из данных авто
-• Разделять большие файлы на части по 2000 строк
-• Добавлять геопривязку для карт
+• Очистка адресов от лишней информации
+• Извлечение номерных знаков из данных авто
+• Разделение больших файлов на части по 2000 строк
+• Гибкая фильтрация
+• Добавление меток на карту
 
-🎯 **Умная фильтрация (исправлена):**
-• Исключение дальних регионов и городов
-• ✅ Сохранение московских улиц: "ул. Саратовская", "Волгоградский пр-кт"
-• ❌ Исключение регионов: "г. Саратов", "Волгоградская область"
-• Выбор типов адресов и возраста автомобилей
-
-📎 **Поддерживаемые форматы:**
-• CSV (.csv)
-• Excel (.xlsx, .xls)
-
-📤 **Просто отправьте мне файл для обработки!**
+📤 **Просто отправьте мне файл для обработки**
   `;
   
   await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
 }
-
-// [ОСТАЛЬНЫЕ ФУНКЦИИ ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ - handleDocument, handleCallbackQuery, и т.д.]
-// [Скопируйте их из предыдущей версии]
 
 // Обработчик документов
 async function handleDocument(chatId, document) {
@@ -565,7 +560,6 @@ async function handleDocument(chatId, document) {
       message_id: processingMsg.message_id
     });
 
-    // Фильтруем по регионам через анализ адресов
     const filteredByCityContent = filterByRegion(csvContent);
 
     await bot.editMessageText('📊 Анализирую данные для дополнительных фильтров...', {
@@ -573,10 +567,8 @@ async function handleDocument(chatId, document) {
       message_id: processingMsg.message_id
     });
 
-    // Извлекаем уникальные значения
     const columnInfo = parseCSVAndExtractValues(filteredByCityContent);
 
-    // Сохраняем данные пользователя
     userData.set(chatId, {
       fileName,
       originalCsvContent: csvContent,
@@ -588,11 +580,9 @@ async function handleDocument(chatId, document) {
 
     await bot.deleteMessage(chatId, processingMsg.message_id);
 
-    // Получаем количество строк до и после фильтрации
     const originalRowsCount = csvContent.split('\n').length - 1;
     const filteredRowsCount = filteredByCityContent.split('\n').length - 1;
 
-    // Спрашиваем о фильтрах
     const filterKeyboard = {
       inline_keyboard: [
         [
@@ -631,17 +621,6 @@ async function handleDocument(chatId, document) {
   }
 }
 
-// [ДОБАВЬТЕ ОСТАЛЬНЫЕ ФУНКЦИИ ИЗ ПРЕДЫДУЩЕЙ ВЕРСИИ:]
-// - handleCallbackQuery
-// - handleAddressTypeSelection  
-// - handleCarAgeSelection
-// - processAndSendFiles
-// - handleMessage
-// - webhook endpoint
-// - основные routes
-// - graceful shutdown
-// - запуск сервера
-
 // Обработчик callback запросов
 async function handleCallbackQuery(query) {
   const chatId = query.message.chat.id;
@@ -661,7 +640,7 @@ async function handleCallbackQuery(query) {
     }
 
     if (data === 'no_filters') {
-      await processAndSendFiles(chatId, userInfo.filteredCsvContent, userInfo.fileName, messageId);
+      await processAndSendFiles(chatId, userInfo.filteredCsvContent, userInfo.fileName, messageId, false);
     } else if (data === 'setup_filters') {
       userStates.set(chatId, STATES.SELECTING_ADDRESS_TYPE);
       const keyboard = createAddressTypeKeyboard(userInfo.columnInfo.addressTypes, userInfo.selectedAddressTypes);
@@ -695,7 +674,7 @@ async function handleCallbackQuery(query) {
         await bot.editMessageText('❌ После применения фильтров не осталось данных. Попробуйте изменить настройки.', { chat_id: chatId, message_id: messageId });
         return;
       }
-      await processAndSendFiles(chatId, filteredContent, userInfo.fileName, messageId, true);
+      await processAndSendFiles(chatId, filteredContent, userInfo.fileName, messageId, true, userInfo.selectedAddressTypes, userInfo.selectedCarAges);
     } else if (data === 'reselect_filters') {
       userInfo.selectedAddressTypes = []; userInfo.selectedCarAges = []; userData.set(chatId, userInfo);
       const filterKeyboard = { inline_keyboard: [[ { text: '🎯 Настроить фильтры', callback_data: 'setup_filters' }, { text: '📤 Без доп. фильтров', callback_data: 'no_filters' } ]] };
@@ -745,17 +724,26 @@ async function handleCarAgeSelection(chatId, data, messageId, userInfo) {
   await bot.editMessageReplyMarkup(keyboard, { chat_id: chatId, message_id: messageId });
 }
 
-async function processAndSendFiles(chatId, csvContent, fileName, messageId, withFilters = false) {
+// ОБНОВЛЕННАЯ ФУНКЦИЯ: Обработка и отправка файлов с информацией о фильтрах
+async function processAndSendFiles(chatId, csvContent, fileName, messageId, withFilters = false, selectedAddressTypes = [], selectedCarAges = []) {
   try {
     await bot.editMessageText('☁️ Обрабатываю данные в облаке...', { chat_id: chatId, message_id: messageId });
-    const result = await processCSVInAppsScript(csvContent, fileName);
+
+    // Генерируем информацию о фильтрах для названий файлов
+    const filterInfo = withFilters ? generateFilterInfo(selectedAddressTypes, selectedCarAges) : null;
+
+    const result = await processCSVInAppsScript(csvContent, fileName, filterInfo);
+
     if (result.success) {
       await bot.deleteMessage(chatId, messageId);
+
       const filterInfo = withFilters ? '\n🎯 **С примененными фильтрами**' : '\n🧠 **С умной региональной фильтрацией**';
       const resultMessage = `✅ **Файл успешно обработан!**${filterInfo}\n\n📊 **Статистика:**\n• Всего строк: ${result.totalRows}\n• Создано частей: ${result.partsCount}\n\n📁 **Отправляю обработанные файлы...**`;
       await bot.sendMessage(chatId, resultMessage, { parse_mode: 'Markdown' });
+
       const instructionMessage = '💡 **Инструкция по использованию:**\n\n1. Сохраните полученные файлы на свое устройство\n2. Перейдите в Google My Maps (mymaps.google.com)\n3. Создайте новую карту\n4. Загружайте каждый файл по отдельности для получения меток на карте\n5. Адреса автоматически преобразуются в точки на карте\n\n🎯 **Каждый файл содержит до 2000 записей для оптимальной работы с картами**';
       await bot.sendMessage(chatId, instructionMessage, { parse_mode: 'Markdown' });
+
       for (let i = 0; i < result.files.length; i++) {
         const file = result.files[i];
         const buffer = Buffer.from(file.content, 'base64');
@@ -764,6 +752,7 @@ async function processAndSendFiles(chatId, csvContent, fileName, messageId, with
           await new Promise(resolve => setTimeout(resolve, 1500));
         }
       }
+
       const reselectionKeyboard = { inline_keyboard: [[ { text: '🔄 Перевыбрать фильтры', callback_data: 'reselect_filters' } ]] };
       await bot.sendMessage(chatId, '🎉 Все файлы отправлены! Можете загружать их в Google My Maps.', { reply_markup: reselectionKeyboard });
     } else {
@@ -806,11 +795,11 @@ app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send(`<!DOCTYPE html><html><head><title>Rozysk Avto Bot v6.2</title><style>body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #f0f0f0; } .container { max-width: 700px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); } .status { color: #4CAF50; font-size: 24px; font-weight: bold; } .info { color: #666; margin-top: 20px; line-height: 1.6; } .version { background: #e3f2fd; padding: 15px; border-radius: 5px; margin: 20px 0; } .fix { background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 10px 0; }</style></head><body><div class="container"><h1>🚗 Rozysk Avto Bot</h1><div class="status">✅ Сервис работает!</div><div class="version"><strong>Версия 6.2 - Исправленная фильтрация</strong><br>• Умная фильтрация по регионам<br>• Исправлена логика определения улиц<br>• Точное исключение дальних городов<br>• Сохранение московских адресов</div><div class="fix"><strong>🔧 Исправления v6.2:</strong><br>• ✅ Сохраняет: "ул. Саратовская", "Волгоградский пр-кт"<br>• ❌ Исключает: "г. Саратов", "Саратовская область"<br>• Улучшена логика анализа адресов<br>• Точное определение городов vs улиц</div><div class="info"><p><strong>Telegram:</strong> <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p><p><strong>Поддерживаемые форматы:</strong> CSV, Excel (xlsx, xls)</p><p><strong>Время работы:</strong> ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}</p></div></div></body></html>`);
+  res.send(`<!DOCTYPE html><html><head><title>Rozysk Avto Bot v6.2</title><style>body { font-family: Arial, sans-serif; margin: 50px; text-align: center; background: #f0f0f0; } .container { max-width: 700px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); } .status { color: #4CAF50; font-size: 24px; font-weight: bold; } .info { color: #666; margin-top: 20px; line-height: 1.6; } .version { background: #e3f2fd; padding: 15px; border-radius: 5px; margin: 20px 0; } .naming { background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 10px 0; }</style></head><body><div class="container"><h1>🚗 Rozysk Avto Bot</h1><div class="status">✅ Сервис работает!</div><div class="version"><strong>Версия 6.2 - Умные названия файлов</strong><br>• Умная фильтрация по регионам<br>• Интеллектуальные названия файлов<br>• Информация о фильтрах в именах<br>• Упрощенный интерфейс</div><div class="naming"><strong>📝 Логика названий файлов:</strong><br>• Без фильтров: "1 часть исходное_имя.csv"<br>• С фильтрами: "1 часть Офис + новое авто исходное_имя.csv"<br>• Краткое описание примененных фильтров<br>• Понятная структура названий</div><div class="info"><p><strong>Telegram:</strong> <a href="https://t.me/rozysk_avto_bot">@rozysk_avto_bot</a></p><p><strong>Поддерживаемые форматы:</strong> CSV, Excel (xlsx, xls)</p><p><strong>Время работы:</strong> ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}</p></div></div></body></html>`);
 });
 
 app.get('/doget', (req, res) => {
-  res.json({ status: 'ok', message: 'Rozysk Avto Bot v6.2 with fixed smart filtering is running', webhook: WEBHOOK_URL, timestamp: new Date().toISOString(), features: ['Fixed smart address analysis', 'Proper street name preservation', 'Accurate distant city exclusion', 'Improved address vs city detection', 'Regional filtering', 'Address type filtering', 'Car age filtering'] });
+  res.json({ status: 'ok', message: 'Rozysk Avto Bot v6.2 with smart file naming is running', webhook: WEBHOOK_URL, timestamp: new Date().toISOString(), features: ['Smart file naming', 'Filter info in filenames', 'Simplified interface', 'Regional filtering', 'Address type filtering', 'Car age filtering'] });
 });
 
 app.post('/dopost', (req, res) => {
@@ -823,7 +812,7 @@ process.on('SIGINT', async () => { console.log('Получен SIGINT, заве�
 app.listen(port, async () => {
   console.log(`🚀 Server v6.2 running on port ${port}`);
   console.log(`📡 Webhook URL: ${WEBHOOK_URL}`);
-  console.log(`🔧 Fixed filtering: Streets preserved, distant cities excluded`);
+  console.log(`📝 Features: Smart file naming, filter info in names`);
   await setupWebhook();
-  console.log('✅ Telegram bot v6.2 with fixed smart filtering is ready!');
+  console.log('✅ Telegram bot v6.2 with smart file naming is ready!');
 });
