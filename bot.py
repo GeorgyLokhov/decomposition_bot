@@ -1,17 +1,26 @@
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-import anthropic
+import json
 import asyncio
+import queue
+import threading
+from flask import Flask, request
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import anthropic
 
 # Токены
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY")
+WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "https://твой-url.onrender.com") + "/webhook"
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+app = Flask(__name__)
 
-# Хранилище задач пользователей
+# Хранилище задач
 user_tasks = {}
+update_queue = queue.Queue()
+application = None
+bot_loop = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -25,7 +34,6 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("⏳ Декомпозирую задачу...")
     
-    # Запрос к Claude
     prompt = f"""Декомпозируй задачу на шаги. Каждый шаг - АБСУРДНО простое действие на 5-10 минут.
 Примеры шагов: "открой ноутбук", "создай пустой файл", "напиши заголовок".
 
@@ -45,25 +53,15 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     steps_text = message.content[0].text
-    
-    # Парсинг шагов
-    steps = []
-    for line in steps_text.split('\n'):
-        if line.strip().startswith('Шаг'):
-            steps.append(line.strip())
+    steps = [line.strip() for line in steps_text.split('\n') if line.strip().startswith('Шаг')]
     
     if not steps:
         await update.message.reply_text("Не смог распарсить шаги. Попробуй переформулировать задачу.")
         return
     
-    # Сохраняем
-    user_tasks[user_id] = {
-        'steps': steps,
-        'current': 0,
-        'task_name': task_text
-    }
+    user_tasks[user_id] = {'steps': steps, 'current': 0, 'task_name': task_text}
     
-    # Показываем шаги
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     steps_list = '\n'.join(steps)
     keyboard = [[InlineKeyboardButton("▶️ Начать", callback_data="start_steps")]]
     
@@ -94,15 +92,14 @@ async def send_current_step(query, user_id, context):
         return
     
     step = steps[current]
-    
-    # Извлекаем время
-    minutes = 5  # по умолчанию
+    minutes = 5
     if 'мин' in step:
         try:
             minutes = int(step.split('(')[1].split('мин')[0].strip())
         except:
             pass
     
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = [[InlineKeyboardButton("✅ Готово", callback_data="next_step")]]
     
     await query.edit_message_text(
@@ -110,14 +107,13 @@ async def send_current_step(query, user_id, context):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     
-    # Таймер
     asyncio.create_task(send_timer_reminder(query, user_id, minutes, current))
 
 async def send_timer_reminder(query, user_id, minutes, step_num):
     await asyncio.sleep(minutes * 60)
     
-    # Проверяем что пользователь всё еще на этом шаге
     if user_id in user_tasks and user_tasks[user_id]['current'] == step_num:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = [[InlineKeyboardButton("✅ Готово", callback_data="next_step")]]
         try:
             await query.message.reply_text(
@@ -139,16 +135,101 @@ async def next_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_tasks[user_id]['current'] += 1
     await send_current_step(query, user_id, context)
 
-def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+# Настройка приложения Telegram
+async def setup_application():
+    global application
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task))
-    app.add_handler(CallbackQueryHandler(start_steps, pattern="^start_steps$"))
-    app.add_handler(CallbackQueryHandler(next_step, pattern="^next_step$"))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task))
+    application.add_handler(CallbackQueryHandler(start_steps, pattern="^start_steps$"))
+    application.add_handler(CallbackQueryHandler(next_step, pattern="^next_step$"))
     
-    print("Бот запущен...")
-    app.run_polling()
+    await application.initialize()
+    await application.start()
+    print("✅ Telegram application initialized")
+
+async def setup_webhook():
+    try:
+        bot = Bot(token=TELEGRAM_TOKEN)
+        await bot.initialize()
+        result = await bot.set_webhook(url=WEBHOOK_URL)
+        await bot.shutdown()
+        print(f"✅ Webhook set: {WEBHOOK_URL} -> {result}")
+    except Exception as e:
+        print(f"❌ Error setting webhook: {e}")
+
+async def process_updates():
+    global application, update_queue
+    print("🚀 Starting update processor...")
+    
+    while True:
+        try:
+            try:
+                update_data = update_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            
+            if update_data is None:
+                break
+            
+            update = Update.de_json(update_data, application.bot)
+            await application.process_update(update)
+            print(f"✅ Processed update: {update.update_id}")
+        except Exception as e:
+            print(f"❌ Error processing update: {e}")
+        
+        await asyncio.sleep(0.01)
+
+def run_bot():
+    global bot_loop
+    try:
+        bot_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(bot_loop)
+        
+        bot_loop.run_until_complete(setup_application())
+        bot_loop.run_until_complete(setup_webhook())
+        bot_loop.run_until_complete(process_updates())
+    except Exception as e:
+        print(f"❌ Error in bot thread: {e}")
+    finally:
+        if bot_loop:
+            bot_loop.close()
+
+# Flask routes
+@app.route('/')
+def index():
+    return "✅ Бот работает!"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    try:
+        json_data = request.get_json()
+        if not json_data:
+            return "No data", 400
+        
+        update_queue.put(json_data)
+        print(f"📨 Update queued: {json_data.get('update_id', 'unknown')}")
+        return "OK", 200
+    except Exception as e:
+        print(f"❌ Error in webhook: {e}")
+        return "Error", 500
+
+@app.route('/health')
+def health():
+    return "OK", 200
 
 if __name__ == '__main__':
-    main()
+    print("🚀 Starting bot with webhook...")
+    
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    import time
+    time.sleep(3)
+    
+    # Запуск Flask
+    port = int(os.environ.get('PORT', 10000))
+    print(f"🌐 Starting Flask server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
