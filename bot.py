@@ -12,7 +12,6 @@ import anthropic
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "https://твой-url.onrender.com") + "/webhook"
-print(f"DEBUG: ANTHROPIC_KEY = {ANTHROPIC_KEY[:20] if ANTHROPIC_KEY else 'NONE'}...")
 
 # Настройка Gemini
 genai.configure(api_key=GEMINI_KEY)
