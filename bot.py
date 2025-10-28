@@ -10,11 +10,13 @@ import anthropic
 
 # Токены
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY")
+GEMINI_KEY = os.getenv("GEMINI_KEY")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "https://твой-url.onrender.com") + "/webhook"
 print(f"DEBUG: ANTHROPIC_KEY = {ANTHROPIC_KEY[:20] if ANTHROPIC_KEY else 'NONE'}...")
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+# Настройка Gemini
+genai.configure(api_key=GEMINI_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
 app = Flask(__name__)
 
 # Хранилище задач
@@ -47,13 +49,10 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Максимум 8 шагов."""
 
-    message = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
-    )
+    # Запрос к Gemini
+    response = model.generate_content(prompt)
+    steps_text = response.text
     
-    steps_text = message.content[0].text
     steps = [line.strip() for line in steps_text.split('\n') if line.strip().startswith('Шаг')]
     
     if not steps:
