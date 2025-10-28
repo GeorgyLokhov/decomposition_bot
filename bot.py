@@ -4,18 +4,19 @@ import asyncio
 import queue
 import threading
 from flask import Flask, request
-from telegram import Update, Bot
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-import anthropic
+import google.generativeai as genai
 
 # Токены
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
-WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "https://твой-url.onrender.com") + "/webhook"
+WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "https://rozysk-avto-bot.onrender.com") + "/webhook"
 
 # Настройка Gemini
 genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
+
 app = Flask(__name__)
 
 # Хранилище задач
@@ -48,26 +49,29 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Максимум 8 шагов."""
 
-    # Запрос к Gemini
-    response = model.generate_content(prompt)
-    steps_text = response.text
-    
-    steps = [line.strip() for line in steps_text.split('\n') if line.strip().startswith('Шаг')]
-    
-    if not steps:
-        await update.message.reply_text("Не смог распарсить шаги. Попробуй переформулировать задачу.")
-        return
-    
-    user_tasks[user_id] = {'steps': steps, 'current': 0, 'task_name': task_text}
-    
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    steps_list = '\n'.join(steps)
-    keyboard = [[InlineKeyboardButton("▶️ Начать", callback_data="start_steps")]]
-    
-    await update.message.reply_text(
-        f"📋 Задача: {task_text}\n\n{steps_list}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    try:
+        # Запрос к Gemini
+        response = model.generate_content(prompt)
+        steps_text = response.text
+        
+        steps = [line.strip() for line in steps_text.split('\n') if line.strip().startswith('Шаг')]
+        
+        if not steps:
+            await update.message.reply_text("Не смог распарсить шаги. Попробуй переформулировать задачу.")
+            return
+        
+        user_tasks[user_id] = {'steps': steps, 'current': 0, 'task_name': task_text}
+        
+        steps_list = '\n'.join(steps)
+        keyboard = [[InlineKeyboardButton("▶️ Начать", callback_data="start_steps")]]
+        
+        await update.message.reply_text(
+            f"📋 Задача: {task_text}\n\n{steps_list}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        print(f"Error in handle_task: {e}")
+        await update.message.reply_text("Произошла ошибка. Попробуй ещё раз.")
 
 async def start_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -98,7 +102,6 @@ async def send_current_step(query, user_id, context):
         except:
             pass
     
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = [[InlineKeyboardButton("✅ Готово", callback_data="next_step")]]
     
     await query.edit_message_text(
@@ -112,7 +115,6 @@ async def send_timer_reminder(query, user_id, minutes, step_num):
     await asyncio.sleep(minutes * 60)
     
     if user_id in user_tasks and user_tasks[user_id]['current'] == step_num:
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = [[InlineKeyboardButton("✅ Готово", callback_data="next_step")]]
         try:
             await query.message.reply_text(
