@@ -5,8 +5,8 @@ import anthropic
 import asyncio
 
 # Токены
-TELEGRAM_TOKEN = "ВСТАВЬ_ТОКЕН_БОТА"
-ANTHROPIC_KEY = "ВСТАВЬ_КЛЮЧ_CLAUDE"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY")
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
