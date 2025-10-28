@@ -12,6 +12,7 @@ import anthropic
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "https://твой-url.onrender.com") + "/webhook"
+print(f"DEBUG: ANTHROPIC_KEY = {ANTHROPIC_KEY[:20] if ANTHROPIC_KEY else 'NONE'}...")
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 app = Flask(__name__)
