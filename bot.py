@@ -3,6 +3,7 @@ import json
 import asyncio
 import queue
 import threading
+import traceback
 from flask import Flask, request
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -12,6 +13,11 @@ import google.generativeai as genai
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "https://rozysk-avto-bot.onrender.com") + "/webhook"
+
+# Диагностика ключей
+print(f"🔍 TELEGRAM_TOKEN: {'OK' if TELEGRAM_TOKEN else 'MISSING'}")
+print(f"🔍 GEMINI_KEY: {'OK (' + str(len(GEMINI_KEY)) + ' chars)' if GEMINI_KEY else 'MISSING'}")
+print(f"🔍 WEBHOOK_URL: {WEBHOOK_URL}")
 
 # Настройка Gemini
 genai.configure(api_key=GEMINI_KEY)
@@ -26,6 +32,7 @@ application = None
 bot_loop = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"📥 /start command from user {update.effective_user.id}")
     await update.message.reply_text(
         "Отправь мне задачу, я разобью её на абсурдно простые шаги по 5-10 минут.\n\n"
         "Например: 'написать статью про AI' или 'разобрать почту'"
@@ -34,6 +41,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     task_text = update.message.text
+    
+    print(f"📥 Task received from user {user_id}: {task_text}")
     
     await update.message.reply_text("⏳ Декомпозирую задачу...")
     
@@ -50,13 +59,19 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Максимум 8 шагов."""
 
     try:
+        print(f"🤖 Sending request to Gemini API...")
         # Запрос к Gemini
         response = model.generate_content(prompt)
+        print(f"✅ Gemini API response received")
+        
         steps_text = response.text
+        print(f"📝 Response text: {steps_text[:200]}...")
         
         steps = [line.strip() for line in steps_text.split('\n') if line.strip().startswith('Шаг')]
+        print(f"📋 Parsed {len(steps)} steps")
         
         if not steps:
+            print(f"⚠️ No steps parsed from response")
             await update.message.reply_text("Не смог распарсить шаги. Попробуй переформулировать задачу.")
             return
         
@@ -69,14 +84,19 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📋 Задача: {task_text}\n\n{steps_list}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        print(f"✅ Steps sent to user {user_id}")
+        
     except Exception as e:
-        print(f"Error in handle_task: {e}")
-        await update.message.reply_text("Произошла ошибка. Попробуй ещё раз.")
+        print(f"❌ ERROR in handle_task: {type(e).__name__}: {str(e)}")
+        traceback.print_exc()
+        await update.message.reply_text(f"Произошла ошибка: {type(e).__name__}: {str(e)}")
 
 async def start_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
+    
+    print(f"▶️ User {user_id} started steps")
     
     if user_id not in user_tasks:
         await query.edit_message_text("Задача не найдена. Отправь новую.")
@@ -90,6 +110,7 @@ async def send_current_step(query, user_id, context):
     steps = task_data['steps']
     
     if current >= len(steps):
+        print(f"🎉 User {user_id} completed all steps")
         await query.edit_message_text("🎉 Все шаги выполнены! Задача завершена.")
         del user_tasks[user_id]
         return
@@ -101,6 +122,8 @@ async def send_current_step(query, user_id, context):
             minutes = int(step.split('(')[1].split('мин')[0].strip())
         except:
             pass
+    
+    print(f"📤 Sending step {current + 1}/{len(steps)} to user {user_id}, timer: {minutes} min")
     
     keyboard = [[InlineKeyboardButton("✅ Готово", callback_data="next_step")]]
     
@@ -115,19 +138,22 @@ async def send_timer_reminder(query, user_id, minutes, step_num):
     await asyncio.sleep(minutes * 60)
     
     if user_id in user_tasks and user_tasks[user_id]['current'] == step_num:
+        print(f"⏰ Timer finished for user {user_id}, step {step_num + 1}")
         keyboard = [[InlineKeyboardButton("✅ Готово", callback_data="next_step")]]
         try:
             await query.message.reply_text(
                 "⏰ Время вышло! Готово?",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Could not send timer reminder: {e}")
 
 async def next_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
+    
+    print(f"➡️ User {user_id} clicked next step")
     
     if user_id not in user_tasks:
         await query.edit_message_text("Задача не найдена.")
@@ -139,6 +165,7 @@ async def next_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Настройка приложения Telegram
 async def setup_application():
     global application
+    print("🔧 Setting up Telegram application...")
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
@@ -152,6 +179,7 @@ async def setup_application():
 
 async def setup_webhook():
     try:
+        print("🔧 Setting up webhook...")
         bot = Bot(token=TELEGRAM_TOKEN)
         await bot.initialize()
         result = await bot.set_webhook(url=WEBHOOK_URL)
@@ -159,6 +187,7 @@ async def setup_webhook():
         print(f"✅ Webhook set: {WEBHOOK_URL} -> {result}")
     except Exception as e:
         print(f"❌ Error setting webhook: {e}")
+        traceback.print_exc()
 
 async def process_updates():
     global application, update_queue
@@ -179,6 +208,7 @@ async def process_updates():
             print(f"✅ Processed update: {update.update_id}")
         except Exception as e:
             print(f"❌ Error processing update: {e}")
+            traceback.print_exc()
         
         await asyncio.sleep(0.01)
 
@@ -193,6 +223,7 @@ def run_bot():
         bot_loop.run_until_complete(process_updates())
     except Exception as e:
         print(f"❌ Error in bot thread: {e}")
+        traceback.print_exc()
     finally:
         if bot_loop:
             bot_loop.close()
@@ -214,6 +245,7 @@ def webhook():
         return "OK", 200
     except Exception as e:
         print(f"❌ Error in webhook: {e}")
+        traceback.print_exc()
         return "Error", 500
 
 @app.route('/health')
