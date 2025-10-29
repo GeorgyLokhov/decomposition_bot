@@ -230,6 +230,8 @@ async def send_current_step(query, user_id, context):
     keyboard = [
         [InlineKeyboardButton("✅ Готово", callback_data="next_step"),
          InlineKeyboardButton("⏭ Пропустить", callback_data="skip_step")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="prev_step"),
+         InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")],
         [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{current}"),
          InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{current}")]
     ]
@@ -252,26 +254,57 @@ async def send_current_step(query, user_id, context):
     )
 
 async def update_timer(query, user_id, total_minutes, step_num, context):
-    # Обновляет таймер в реальном времени каждые 10 секунд
+    # Обновляет таймер в реальном времени каждые 5 секунд, используя реальное время
     try:
-        total_seconds = total_minutes * 60
+        if user_id not in user_tasks:
+            return
 
-        for remaining_seconds in range(total_seconds - 10, -1, -10):
-            await asyncio.sleep(10)
+        task_data = user_tasks[user_id]
+        end_time = task_data.get('current_step_end_time')
+
+        if not end_time:
+            return
+
+        while True:
+            await asyncio.sleep(5)
 
             if user_id not in user_tasks or user_tasks[user_id]['current'] != step_num:
+                return
+
+            # Вычисляем реальное оставшееся время
+            now = datetime.now()
+            remaining_time = end_time - now
+
+            if remaining_time.total_seconds() <= 0:
+                # Время вышло
+                task_data = user_tasks[user_id]
+                steps = task_data['steps']
+
+                keyboard = [
+                    [InlineKeyboardButton("✅ Готово", callback_data="next_step"),
+                     InlineKeyboardButton("⏭ Пропустить", callback_data="skip_step")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="prev_step"),
+                     InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
+                ]
+                await query.message.reply_text(
+                    "⏰ Время вышло! Готово?",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
                 return
 
             task_data = user_tasks[user_id]
             steps = task_data['steps']
             step = steps[step_num]
 
+            remaining_seconds = int(remaining_time.total_seconds())
             mins = remaining_seconds // 60
             secs = remaining_seconds % 60
 
             keyboard = [
                 [InlineKeyboardButton("✅ Готово", callback_data="next_step"),
                  InlineKeyboardButton("⏭ Пропустить", callback_data="skip_step")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="prev_step"),
+                 InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")],
                 [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{step_num}"),
                  InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")]
             ]
@@ -283,20 +316,9 @@ async def update_timer(query, user_id, total_minutes, step_num, context):
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
             except Exception as e:
-                print(f"⚠️ Could not update timer: {e}")
-
-        # Время вышло
-        if user_id in user_tasks and user_tasks[user_id]['current'] == step_num:
-            keyboard = [
-                [InlineKeyboardButton("✅ Готово", callback_data="next_step"),
-                 InlineKeyboardButton("⏭ Пропустить", callback_data="skip_step")],
-                [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{step_num}"),
-                 InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")]
-            ]
-            await query.message.reply_text(
-                "⏰ Время вышло! Готово?",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+                # Игнорируем ошибки "message is not modified"
+                if "message is not modified" not in str(e).lower():
+                    print(f"⚠️ Could not update timer: {e}")
 
     except asyncio.CancelledError:
         print(f"⏱ Timer cancelled for user {user_id}")
@@ -338,6 +360,58 @@ async def skip_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_tasks[user_id]['current'] += 1
     await send_current_step(query, user_id, context)
+
+async def prev_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("◀️ Возврат к предыдущему шагу")
+    user_id = update.effective_user.id
+
+    print(f"◀️ User {user_id} went back to previous step")
+
+    if user_id not in user_tasks:
+        await query.edit_message_text("Задача не найдена.")
+        return
+
+    task_data = user_tasks[user_id]
+    current = task_data['current']
+
+    # Если это первый шаг, нельзя вернуться назад
+    if current <= 0:
+        await query.answer("⚠️ Это первый шаг, нельзя вернуться назад")
+        return
+
+    # Отменяем таймер текущего шага
+    if user_id in timer_tasks:
+        timer_tasks[user_id].cancel()
+
+    user_tasks[user_id]['current'] -= 1
+    await send_current_step(query, user_id, context)
+
+async def cancel_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    print(f"❌ User {user_id} cancelled task")
+
+    if user_id not in user_tasks:
+        await query.edit_message_text("Задача не найдена.")
+        return
+
+    # Отменяем таймер
+    if user_id in timer_tasks:
+        timer_tasks[user_id].cancel()
+        del timer_tasks[user_id]
+
+    task_name = user_tasks[user_id]['task_name']
+    del user_tasks[user_id]
+
+    keyboard = [[InlineKeyboardButton("➕ Новая задача", callback_data="new_task")]]
+
+    await query.edit_message_text(
+        f"❌ Задача отменена: {task_name}\n\nМожешь начать новую задачу.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def rewrite_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -531,6 +605,8 @@ async def setup_application():
     application.add_handler(CallbackQueryHandler(edit_steps, pattern="^edit_steps$"))
     application.add_handler(CallbackQueryHandler(next_step, pattern="^next_step$"))
     application.add_handler(CallbackQueryHandler(skip_step, pattern="^skip_step$"))
+    application.add_handler(CallbackQueryHandler(prev_step, pattern="^prev_step$"))
+    application.add_handler(CallbackQueryHandler(cancel_task, pattern="^cancel_task$"))
     application.add_handler(CallbackQueryHandler(rewrite_step, pattern="^rewrite_step_"))
     application.add_handler(CallbackQueryHandler(edit_single_step, pattern="^edit_single_step_"))
     application.add_handler(CallbackQueryHandler(cancel_edit_step, pattern="^cancel_edit_step$"))
