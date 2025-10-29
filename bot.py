@@ -47,7 +47,30 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task_text = update.message.text
     print(f"📥 Task received from user {user_id}: {task_text}")
 
-    # Проверяем режим редактирования
+    # Проверяем режим редактирования одного шага
+    if context.user_data.get('editing_single_step') is not None and user_id in user_tasks:
+        step_num = context.user_data['editing_single_step']
+
+        # Парсим новый текст шага
+        new_step = task_text.strip()
+
+        # Если не начинается с "Шаг", форматируем
+        if not new_step.startswith('Шаг'):
+            new_step = f"Шаг {step_num + 1} (5 мин): {new_step}"
+
+        # Обновляем шаг
+        user_tasks[user_id]['steps'][step_num] = new_step
+
+        keyboard = [[InlineKeyboardButton("▶️ Продолжить", callback_data="start_steps")]]
+        await update.message.reply_text(
+            f"✅ Шаг обновлен:\n\n{new_step}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+        context.user_data['editing_single_step'] = None
+        return
+
+    # Проверяем режим редактирования всего списка
     if context.user_data.get('editing_steps') and user_id in user_tasks:
         # Пользователь отправил новый список шагов
         steps = [line.strip() for line in task_text.split('\n') if line.strip().startswith('Шаг')]
@@ -203,14 +226,20 @@ async def send_current_step(query, user_id, context):
 
     print(f"📤 Sending step {current + 1}/{len(steps)} to user {user_id}, timer: {minutes} min")
 
-    keyboard = [[InlineKeyboardButton("✅ Готово", callback_data="next_step")]]
+    # Кнопки для управления шагом
+    keyboard = [
+        [InlineKeyboardButton("✅ Готово", callback_data="next_step"),
+         InlineKeyboardButton("⏭ Пропустить", callback_data="skip_step")],
+        [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{current}"),
+         InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{current}")]
+    ]
 
     # Запускаем таймер в реальном времени
     end_time = datetime.now() + timedelta(minutes=minutes)
     task_data['current_step_end_time'] = end_time
 
     await query.edit_message_text(
-        f"Шаг {current + 1}/{len(steps)}:\n\n{step}\n\n⏱ Таймер: {minutes} мин",
+        f"Шаг {current + 1}/{len(steps)}:\n\n{step}\n\n⏱ Таймер: {minutes:02d}:00",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -223,10 +252,12 @@ async def send_current_step(query, user_id, context):
     )
 
 async def update_timer(query, user_id, total_minutes, step_num, context):
-    # Обновляет таймер в реальном времени каждую минуту
+    # Обновляет таймер в реальном времени каждые 10 секунд
     try:
-        for remaining in range(total_minutes - 1, -1, -1):
-            await asyncio.sleep(60)
+        total_seconds = total_minutes * 60
+
+        for remaining_seconds in range(total_seconds - 10, -1, -10):
+            await asyncio.sleep(10)
 
             if user_id not in user_tasks or user_tasks[user_id]['current'] != step_num:
                 return
@@ -235,12 +266,20 @@ async def update_timer(query, user_id, total_minutes, step_num, context):
             steps = task_data['steps']
             step = steps[step_num]
 
-            keyboard = [[InlineKeyboardButton("✅ Готово", callback_data="next_step")]]
+            mins = remaining_seconds // 60
+            secs = remaining_seconds % 60
+
+            keyboard = [
+                [InlineKeyboardButton("✅ Готово", callback_data="next_step"),
+                 InlineKeyboardButton("⏭ Пропустить", callback_data="skip_step")],
+                [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{step_num}"),
+                 InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")]
+            ]
 
             try:
                 await query.message.edit_text(
                     f"Шаг {step_num + 1}/{len(steps)}:\n\n{step}\n\n"
-                    f"⏱ Осталось: {remaining} мин",
+                    f"⏱ Осталось: {mins:02d}:{secs:02d}",
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
             except Exception as e:
@@ -248,7 +287,12 @@ async def update_timer(query, user_id, total_minutes, step_num, context):
 
         # Время вышло
         if user_id in user_tasks and user_tasks[user_id]['current'] == step_num:
-            keyboard = [[InlineKeyboardButton("✅ Готово", callback_data="next_step")]]
+            keyboard = [
+                [InlineKeyboardButton("✅ Готово", callback_data="next_step"),
+                 InlineKeyboardButton("⏭ Пропустить", callback_data="skip_step")],
+                [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{step_num}"),
+                 InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")]
+            ]
             await query.message.reply_text(
                 "⏰ Время вышло! Готово?",
                 reply_markup=InlineKeyboardMarkup(keyboard)
@@ -275,6 +319,138 @@ async def next_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         timer_tasks[user_id].cancel()
 
     user_tasks[user_id]['current'] += 1
+    await send_current_step(query, user_id, context)
+
+async def skip_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("⏭ Шаг пропущен")
+    user_id = update.effective_user.id
+
+    print(f"⏭ User {user_id} skipped step")
+
+    if user_id not in user_tasks:
+        await query.edit_message_text("Задача не найдена.")
+        return
+
+    # Отменяем таймер текущего шага
+    if user_id in timer_tasks:
+        timer_tasks[user_id].cancel()
+
+    user_tasks[user_id]['current'] += 1
+    await send_current_step(query, user_id, context)
+
+async def rewrite_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    # Извлекаем номер шага из callback_data
+    step_num = int(query.data.split('_')[-1])
+
+    print(f"🔄 User {user_id} requested rewrite for step {step_num}")
+
+    if user_id not in user_tasks:
+        await query.edit_message_text("Задача не найдена.")
+        return
+
+    task_data = user_tasks[user_id]
+    steps = task_data['steps']
+
+    if step_num >= len(steps):
+        await query.edit_message_text("Шаг не найден.")
+        return
+
+    current_step = steps[step_num]
+
+    # Отменяем таймер
+    if user_id in timer_tasks:
+        timer_tasks[user_id].cancel()
+
+    await query.edit_message_text("⏳ Переписываю шаг...")
+
+    try:
+        prompt = f"""Переформулируй этот шаг задачи. Сделай его более понятным и конкретным, но сохрани суть.
+
+Текущий шаг: {current_step}
+
+Формат ответа (строго):
+Шаг X (Y мин): новая формулировка
+
+где X - номер шага, Y - количество минут (5-10 минут)."""
+
+        response = model.generate_content(prompt)
+        new_step = response.text.strip()
+
+        # Проверяем, что ответ начинается с "Шаг"
+        if not new_step.startswith('Шаг'):
+            new_step = f"Шаг {step_num + 1} (5 мин): {new_step}"
+
+        # Обновляем шаг
+        user_tasks[user_id]['steps'][step_num] = new_step
+
+        print(f"✅ Step rewritten for user {user_id}")
+
+        # Показываем обновленный шаг
+        await send_current_step(query, user_id, context)
+
+    except Exception as e:
+        print(f"❌ Error in rewrite_step: {e}")
+        await query.message.reply_text(f"Произошла ошибка при переписывании: {str(e)}")
+        await send_current_step(query, user_id, context)
+
+async def edit_single_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    # Извлекаем номер шага из callback_data
+    step_num = int(query.data.split('_')[-1])
+
+    print(f"✏️ User {user_id} requested edit for step {step_num}")
+
+    if user_id not in user_tasks:
+        await query.edit_message_text("Задача не найдена.")
+        return
+
+    task_data = user_tasks[user_id]
+    steps = task_data['steps']
+
+    if step_num >= len(steps):
+        await query.edit_message_text("Шаг не найден.")
+        return
+
+    current_step = steps[step_num]
+
+    # Отменяем таймер
+    if user_id in timer_tasks:
+        timer_tasks[user_id].cancel()
+
+    # Сохраняем информацию о том, что редактируется конкретный шаг
+    context.user_data['editing_single_step'] = step_num
+
+    keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit_step")]]
+
+    await query.edit_message_text(
+        f"Текущий шаг:\n\n{current_step}\n\n"
+        "Отправь новый текст шага в формате:\n"
+        "Шаг X (Y мин): действие\n\n"
+        "Или нажми 'Отмена' для возврата",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def cancel_edit_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    print(f"❌ User {user_id} cancelled step edit")
+
+    context.user_data['editing_single_step'] = None
+
+    if user_id not in user_tasks:
+        await query.edit_message_text("Задача не найдена.")
+        return
+
     await send_current_step(query, user_id, context)
 
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -354,6 +530,10 @@ async def setup_application():
     application.add_handler(CallbackQueryHandler(start_steps, pattern="^start_steps$"))
     application.add_handler(CallbackQueryHandler(edit_steps, pattern="^edit_steps$"))
     application.add_handler(CallbackQueryHandler(next_step, pattern="^next_step$"))
+    application.add_handler(CallbackQueryHandler(skip_step, pattern="^skip_step$"))
+    application.add_handler(CallbackQueryHandler(rewrite_step, pattern="^rewrite_step_"))
+    application.add_handler(CallbackQueryHandler(edit_single_step, pattern="^edit_single_step_"))
+    application.add_handler(CallbackQueryHandler(cancel_edit_step, pattern="^cancel_edit_step$"))
     application.add_handler(CallbackQueryHandler(show_history, pattern="^show_history$"))
     application.add_handler(CallbackQueryHandler(new_task, pattern="^new_task$"))
 
