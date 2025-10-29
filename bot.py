@@ -9,6 +9,10 @@ from flask import Flask, request
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import google.generativeai as genai
+from dotenv import load_dotenv
+
+# Загружаем переменные окружения из .env файла
+load_dotenv()
 
 # Токены
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -22,7 +26,7 @@ print(f"🔍 WEBHOOK_URL: {WEBHOOK_URL}")
 
 # Настройка Gemini
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash-lite-preview-06-17')
 
 app = Flask(__name__)
 
@@ -33,6 +37,17 @@ update_queue = queue.Queue()
 application = None
 bot_loop = None
 timer_tasks = {}
+
+# Функция для загрузки промптов из файлов
+def load_prompt(filename):
+    """Загружает промпт из файла prompts/"""
+    try:
+        prompt_path = os.path.join(os.path.dirname(__file__), 'prompts', filename)
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        print(f"⚠️ Prompt file not found: {filename}")
+        return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"📥 /start command from user {update.effective_user.id}")
@@ -46,6 +61,21 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     task_text = update.message.text
     print(f"📥 Task received from user {user_id}: {task_text}")
+
+    # Проверяем режим ожидания контекста
+    if context.user_data.get('waiting_for_context'):
+        user_context = task_text.strip()
+        task_to_decompose = context.user_data.get('pending_task')
+
+        print(f"📝 Context received from user {user_id}: {user_context}")
+
+        # Сбрасываем флаг
+        context.user_data['waiting_for_context'] = False
+        context.user_data['pending_task'] = None
+
+        # Запускаем декомпозицию с контекстом
+        await decompose_task_with_context(update, task_to_decompose, user_context, user_id)
+        return
 
     # Проверяем режим редактирования одного шага
     if context.user_data.get('editing_single_step') is not None and user_id in user_tasks:
@@ -89,22 +119,36 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Не смог распарсить шаги. Используй формат: Шаг 1 (5 мин): действие")
             return
 
-    await update.message.reply_text("⏳ Декомпозирую задачу...")
+    # Запрашиваем контекст перед декомпозицией
+    context.user_data['waiting_for_context'] = True
+    context.user_data['pending_task'] = task_text
 
-    prompt = f"""Декомпозируй задачу на шаги. Каждый шаг - АБСУРДНО простое действие на 5-10 минут.
-Примеры шагов: "открой ноутбук", "создай пустой файл", "напиши заголовок".
+    keyboard = [[InlineKeyboardButton("⏭ Пропустить контекст", callback_data="skip_context")]]
+    await update.message.reply_text(
+        "📋 Расскажи немного о своей ситуации для более персонализированной декомпозиции:\n\n"
+        "• Где ты сейчас находишься?\n"
+        "• Сколько у тебя времени?\n"
+        "• Какие ресурсы доступны?\n"
+        "• Твоё текущее состояние?\n\n"
+        "Или нажми 'Пропустить контекст' для стандартной декомпозиции.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return
 
-Задача: {task_text}
+async def decompose_task_with_context(update: Update, task_text: str, user_context: str, user_id: int):
+    """Декомпозирует задачу с учетом контекста пользователя"""
+    await update.message.reply_text("⏳ Декомпозирую задачу с учетом твоего контекста...")
 
-Формат ответа (строго):
-Шаг 1 (5 мин): действие
-Шаг 2 (7 мин): действие
-...
+    # Загружаем промпт из файла
+    prompt_template = load_prompt('decompose_task.txt')
+    if not prompt_template:
+        await update.message.reply_text("Ошибка: не найден файл с инструкциями для AI")
+        return
 
-Максимум 8 шагов."""
+    prompt = prompt_template.replace('{task}', task_text).replace('{context}', user_context)
 
     try:
-        print(f"🤖 Sending request to Gemini API...")
+        print(f"🤖 Sending request to Gemini API with context...")
         response = model.generate_content(prompt)
         print(f"✅ Gemini API response received")
 
@@ -120,28 +164,38 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         user_tasks[user_id] = {
-            'steps': steps, 
-            'current': 0, 
+            'steps': steps,
+            'current': 0,
             'task_name': task_text,
             'started_at': None,
             'completed': False
         }
 
-        steps_list = '\n'.join(steps)
-        keyboard = [
-            [InlineKeyboardButton("▶️ Начать", callback_data="start_steps")],
-            [InlineKeyboardButton("✏️ Редактировать список", callback_data="edit_steps")]
-        ]
+        # Отправляем каждый шаг отдельным сообщением с кнопками
+        for idx, step in enumerate(steps):
+            keyboard = [
+                [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{idx}"),
+                 InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{idx}")]
+            ]
+            await update.message.reply_text(
+                step,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
+        # После всех шагов - кнопки Начать и Отменить
+        final_keyboard = [
+            [InlineKeyboardButton("▶️ Начать", callback_data="start_steps")],
+            [InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
+        ]
         await update.message.reply_text(
-            f"📋 Задача: {task_text}\n\n{steps_list}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            f"📋 Всего шагов: {len(steps)}",
+            reply_markup=InlineKeyboardMarkup(final_keyboard)
         )
 
         print(f"✅ Steps sent to user {user_id}")
 
     except Exception as e:
-        print(f"❌ ERROR in handle_task: {type(e).__name__}: {str(e)}")
+        print(f"❌ ERROR in decompose_task_with_context: {type(e).__name__}: {str(e)}")
         traceback.print_exc()
         await update.message.reply_text(f"Произошла ошибка: {type(e).__name__}: {str(e)}")
 
@@ -169,6 +223,27 @@ async def edit_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     context.user_data['editing_steps'] = True
+
+async def skip_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопки Пропустить контекст"""
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    task_text = context.user_data.get('pending_task')
+    if not task_text:
+        await query.edit_message_text("Задача не найдена.")
+        return
+
+    print(f"⏭ User {user_id} skipped context")
+
+    # Сбрасываем флаги
+    context.user_data['waiting_for_context'] = False
+    context.user_data['pending_task'] = None
+
+    # Декомпозируем без контекста (используем дефолтный контекст)
+    await query.edit_message_text("⏳ Декомпозирую задачу...")
+    await decompose_task_with_context(update, task_text, "Стандартная ситуация", user_id)
 
 async def start_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -241,7 +316,7 @@ async def send_current_step(query, user_id, context):
     task_data['current_step_end_time'] = end_time
 
     await query.edit_message_text(
-        f"Шаг {current + 1}/{len(steps)}:\n\n{step}\n\n⏱ Таймер: {minutes:02d}:00",
+        f"Шаг {current + 1}/{len(steps)}:\n\n{step}\n\n⏱ Осталось: {minutes:02d}:00",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -254,7 +329,7 @@ async def send_current_step(query, user_id, context):
     )
 
 async def update_timer(query, user_id, total_minutes, step_num, context):
-    # Обновляет таймер в реальном времени каждые 5 секунд, используя реальное время
+    # Обновляет таймер в реальном времени каждую секунду, используя реальное время
     try:
         if user_id not in user_tasks:
             return
@@ -266,7 +341,7 @@ async def update_timer(query, user_id, total_minutes, step_num, context):
             return
 
         while True:
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
 
             if user_id not in user_tasks or user_tasks[user_id]['current'] != step_num:
                 return
@@ -443,14 +518,13 @@ async def rewrite_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("⏳ Переписываю шаг...")
 
     try:
-        prompt = f"""Переформулируй этот шаг задачи. Сделай его более понятным и конкретным, но сохрани суть.
+        # Загружаем промпт из файла
+        prompt_template = load_prompt('rewrite_step.txt')
+        if not prompt_template:
+            await query.edit_message_text("Ошибка: не найден файл с инструкциями для AI")
+            return
 
-Текущий шаг: {current_step}
-
-Формат ответа (строго):
-Шаг X (Y мин): новая формулировка
-
-где X - номер шага, Y - количество минут (5-10 минут)."""
+        prompt = prompt_template.replace('{step}', current_step).replace('{step_number}', str(step_num + 1))
 
         response = model.generate_content(prompt)
         new_step = response.text.strip()
@@ -464,13 +538,16 @@ async def rewrite_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         print(f"✅ Step rewritten for user {user_id}")
 
-        # Показываем обновленный шаг
-        await send_current_step(query, user_id, context)
+        # Обновляем сообщение с новым текстом шага и теми же кнопками
+        keyboard = [
+            [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{step_num}"),
+             InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")]
+        ]
+        await query.edit_message_text(new_step, reply_markup=InlineKeyboardMarkup(keyboard))
 
     except Exception as e:
         print(f"❌ Error in rewrite_step: {e}")
-        await query.message.reply_text(f"Произошла ошибка при переписывании: {str(e)}")
-        await send_current_step(query, user_id, context)
+        await query.edit_message_text(f"Произошла ошибка при переписывании: {str(e)}")
 
 async def edit_single_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -519,13 +596,24 @@ async def cancel_edit_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     print(f"❌ User {user_id} cancelled step edit")
 
+    step_num = context.user_data.get('editing_single_step')
     context.user_data['editing_single_step'] = None
 
     if user_id not in user_tasks:
         await query.edit_message_text("Задача не найдена.")
         return
 
-    await send_current_step(query, user_id, context)
+    if step_num is None:
+        await query.edit_message_text("Ошибка: не найден номер шага.")
+        return
+
+    # Возвращаем исходный текст шага с кнопками
+    step_text = user_tasks[user_id]['steps'][step_num]
+    keyboard = [
+        [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{step_num}"),
+         InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")]
+    ]
+    await query.edit_message_text(step_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -601,6 +689,7 @@ async def setup_application():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task))
+    application.add_handler(CallbackQueryHandler(skip_context, pattern="^skip_context$"))
     application.add_handler(CallbackQueryHandler(start_steps, pattern="^start_steps$"))
     application.add_handler(CallbackQueryHandler(edit_steps, pattern="^edit_steps$"))
     application.add_handler(CallbackQueryHandler(next_step, pattern="^next_step$"))
@@ -651,7 +740,40 @@ async def process_updates():
 
         await asyncio.sleep(0.01)
 
-def run_bot():
+def run_bot_polling():
+    """Запуск бота в режиме polling (для локального тестирования)"""
+    try:
+        print("🔄 Starting polling mode...")
+        application_builder = Application.builder().token(TELEGRAM_TOKEN)
+        application_instance = application_builder.build()
+
+        application_instance.add_handler(CommandHandler("start", start))
+        application_instance.add_handler(CommandHandler("history", history_command))
+        application_instance.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task))
+        application_instance.add_handler(CallbackQueryHandler(skip_context, pattern="^skip_context$"))
+        application_instance.add_handler(CallbackQueryHandler(start_steps, pattern="^start_steps$"))
+        application_instance.add_handler(CallbackQueryHandler(edit_steps, pattern="^edit_steps$"))
+        application_instance.add_handler(CallbackQueryHandler(next_step, pattern="^next_step$"))
+        application_instance.add_handler(CallbackQueryHandler(skip_step, pattern="^skip_step$"))
+        application_instance.add_handler(CallbackQueryHandler(prev_step, pattern="^prev_step$"))
+        application_instance.add_handler(CallbackQueryHandler(cancel_task, pattern="^cancel_task$"))
+        application_instance.add_handler(CallbackQueryHandler(rewrite_step, pattern="^rewrite_step_"))
+        application_instance.add_handler(CallbackQueryHandler(edit_single_step, pattern="^edit_single_step_"))
+        application_instance.add_handler(CallbackQueryHandler(cancel_edit_step, pattern="^cancel_edit_step$"))
+        application_instance.add_handler(CallbackQueryHandler(show_history, pattern="^show_history$"))
+        application_instance.add_handler(CallbackQueryHandler(new_task, pattern="^new_task$"))
+
+        print("✅ Bot handlers registered")
+        print("🚀 Bot is running in polling mode...")
+
+        # Запуск polling
+        application_instance.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        print(f"❌ Error in bot: {e}")
+        traceback.print_exc()
+
+def run_bot_webhook():
+    """Запуск бота в режиме webhook (для продакшена)"""
     global bot_loop
     try:
         bot_loop = asyncio.new_event_loop()
@@ -691,16 +813,22 @@ def health():
     return "OK", 200
 
 if __name__ == '__main__':
-    print("🚀 Starting bot with webhook...")
+    # Определяем режим работы: если RENDER_EXTERNAL_URL пустой - локальный режим (polling)
+    is_local = not WEBHOOK_URL or WEBHOOK_URL == "/webhook"
 
-    # Запускаем бота в отдельном потоке
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    if is_local:
+        print("🚀 Starting bot in LOCAL mode (polling)...")
+        run_bot_polling()
+    else:
+        print("🚀 Starting bot in PRODUCTION mode (webhook)...")
+        # Запускаем бота в отдельном потоке
+        bot_thread = threading.Thread(target=run_bot_webhook, daemon=True)
+        bot_thread.start()
 
-    import time
-    time.sleep(3)
+        import time
+        time.sleep(3)
 
-    # Запуск Flask
-    port = int(os.environ.get('PORT', 10000))
-    print(f"🌐 Starting Flask server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
+        # Запуск Flask
+        port = int(os.environ.get('PORT', 10000))
+        print(f"🌐 Starting Flask server on port {port}")
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
