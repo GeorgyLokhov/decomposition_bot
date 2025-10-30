@@ -59,8 +59,10 @@ def load_prompt(filename):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"📥 /start command from user {update.effective_user.id}")
     await update.message.reply_text(
-        "Отправь мне задачу, я разобью её на абсурдно простые шаги по 5-10 минут.\n\n"
-        "Например: 'написать статью про AI' или 'разобрать почту'"
+        "Бывает, большая задача ставит в тупик, и непонятно, с чего начать. Хочется отложить её на потом, но лучший способ обрести ясность — просто начать действовать\n\n"
+        "Я помогу тебе сделать первый шаг, до крайности простой, чтобы не было соблазна его отложить\n\n"
+        "Напиши или скажи голосом, какая у тебя задача, и я разобью её на простые, короткие этапы с таймером\n\n"
+        "Например: «подготовиться к собеседованию» или «убраться в квартире»"
     )
 
 async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -72,6 +74,21 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     task_text = update.message.text
     print(f"📥 Task received from user {user_id}: {task_text}")
+
+    # Проверяем режим ожидания обратной связи
+    if context.user_data.get('waiting_for_feedback'):
+        feedback_text = task_text.strip()
+        print(f"💬 Feedback received from user {user_id}: {feedback_text}")
+
+        # Сохраняем обратную связь
+        context.user_data['user_feedback'] = feedback_text
+        context.user_data['waiting_for_feedback'] = False
+
+        await update.message.reply_text(
+            "✅ Спасибо за обратную связь! Теперь я буду учитывать её при следующих генерациях.\n\n"
+            "Давай попробуем ещё раз. Нажми 'Переписать всё' когда буду готов."
+        )
+        return
 
     # Проверяем режим ожидания контекста
     if context.user_data.get('waiting_for_context'):
@@ -85,7 +102,7 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['pending_task'] = None
 
         # Запускаем декомпозицию с контекстом
-        await decompose_task_with_context(update, task_to_decompose, user_context, user_id)
+        await decompose_task_with_context(update, task_to_decompose, user_context, user_id, context_obj=context)
         return
 
     # Проверяем режим редактирования одного шага
@@ -130,6 +147,9 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Не смог распарсить шаги. Используй формат: Шаг 1 (5 мин): действие")
             return
 
+    # Отправляем статусное сообщение
+    status_msg = await update.message.reply_text("✍🏻 Хочу уточнить...")
+
     # Генерируем персонализированные вопросы для контекста
     print(f"🤖 Generating context questions for task: {task_text[:50]}...")
 
@@ -165,20 +185,25 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⏭ Пропустить контекст", callback_data="skip_context")],
         [InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
     ]
-    await update.message.reply_text(
-        f"📋 Расскажи немного о своей ситуации для более персонализированной декомпозиции:\n\n"
+    # Редактируем статусное сообщение, заменяя его на вопросы
+    await status_msg.edit_text(
+        f"📋 Нужны детали:\n\n"
         f"{questions_text}\n\n"
-        f"Или нажми 'Пропустить контекст' для стандартной декомпозиции.",
+        f"Или нажми «Пропустить контекст», тогда ответ будет менее точным.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return
 
-async def decompose_task_with_context(update: Update, task_text: str, user_context: str, user_id: int, message=None, skip_status_message=False):
-    """Декомпозирует задачу с учетом контекста пользователя"""
+async def decompose_task_with_context(update: Update, task_text: str, user_context: str, user_id: int, message=None, skip_status_message=False, feedback=None, context_obj=None):
+    """Декомпозирует задачу с учетом контекста пользователя и опциональной обратной связи"""
     # Определяем откуда отправлять сообщения - из update.message или переданный message
     msg = message if message else update.message
     if not skip_status_message:
         await msg.reply_text("⏳ Декомпозирую задачу с учетом твоего контекста...")
+
+    # Сохраняем контекст для последующего использования
+    if context_obj:
+        context_obj.user_data['user_context'] = user_context
 
     # Загружаем промпт из файла
     prompt_template = load_prompt('decompose_task.txt')
@@ -186,7 +211,10 @@ async def decompose_task_with_context(update: Update, task_text: str, user_conte
         await msg.reply_text("Ошибка: не найден файл с инструкциями для AI")
         return
 
+    # Добавляем обратную связь в промпт если есть
     prompt = prompt_template.replace('{task}', task_text).replace('{context}', user_context)
+    if feedback:
+        prompt += f"\n\nВАЖНО: Пользователь оставил обратную связь о предыдущих вариантах:\n{feedback}\n\nУчти эту обратную связь и создай СОВЕРШЕННО НОВЫЙ подход к решению задачи."
 
     try:
         print(f"🤖 Sending request to Gemini API with context...")
@@ -212,26 +240,36 @@ async def decompose_task_with_context(update: Update, task_text: str, user_conte
             'completed': False
         }
 
+        # Список для хранения message_id всех отправленных сообщений
+        step_messages = []
+
         # Отправляем каждый шаг отдельным сообщением с кнопками
         for idx, step in enumerate(steps):
             keyboard = [
                 [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{idx}"),
                  InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{idx}")]
             ]
-            await msg.reply_text(
+            sent_msg = await msg.reply_text(
                 step,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
+            step_messages.append(sent_msg.message_id)
 
-        # После всех шагов - кнопки Начать и Отменить
+        # После всех шагов - кнопки Начать, Переписать всё и Отменить
         final_keyboard = [
             [InlineKeyboardButton("▶️ Начать", callback_data="start_steps")],
+            [InlineKeyboardButton("🔄 Переписать всё", callback_data="rewrite_all")],
             [InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
         ]
-        await msg.reply_text(
+        final_msg = await msg.reply_text(
             f"📋 Всего шагов: {len(steps)}",
             reply_markup=InlineKeyboardMarkup(final_keyboard)
         )
+        step_messages.append(final_msg.message_id)
+
+        # Сохраняем message_id в context для последующего удаления
+        if context_obj:
+            context_obj.user_data['step_messages'] = step_messages
 
         print(f"✅ Steps sent to user {user_id}")
 
@@ -289,7 +327,7 @@ async def skip_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Декомпозируем без контекста (используем дефолтный контекст)
     await query.edit_message_text("⏳ Декомпозирую задачу...")
-    await decompose_task_with_context(update, task_text, "Стандартная ситуация", user_id, message=query.message, skip_status_message=True)
+    await decompose_task_with_context(update, task_text, "Стандартная ситуация", user_id, message=query.message, skip_status_message=True, context_obj=context)
 
 async def start_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -535,6 +573,94 @@ async def cancel_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+async def rewrite_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопки 'Переписать всё' - полностью регенерирует задачи"""
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    print(f"🔄 User {user_id} requested full rewrite")
+
+    if user_id not in user_tasks:
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена.", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Получаем счётчик нажатий
+    rewrite_count = context.user_data.get('rewrite_all_count', 0)
+
+    print(f"📊 Rewrite count: {rewrite_count}/5")
+
+    # Если достигнут лимит - запрашиваем обратную связь
+    if rewrite_count >= 5:
+        print(f"⚠️ Rewrite limit reached, requesting feedback")
+
+        # Удаляем все сообщения со шагами
+        step_messages = context.user_data.get('step_messages', [])
+        for msg_id in step_messages:
+            try:
+                await context.bot.delete_message(chat_id=user_id, message_id=msg_id)
+            except Exception as e:
+                print(f"⚠️ Could not delete message {msg_id}: {e}")
+
+        # Сбрасываем счётчик
+        context.user_data['rewrite_all_count'] = 0
+        context.user_data['step_messages'] = []
+
+        # Спрашиваем обратную связь
+        context.user_data['waiting_for_feedback'] = True
+        await query.edit_message_text(
+            "🤔 Я уже 5 раз переписывал эту задачу.\n\n"
+            "Расскажи, чего не хватает в текущей выдаче? Что нужно улучшить?\n\n"
+            "Твоя обратная связь поможет мне лучше понять твои ожидания."
+        )
+        return
+
+    # Увеличиваем счётчик
+    context.user_data['rewrite_all_count'] = rewrite_count + 1
+    print(f"📈 Rewrite count increased to {rewrite_count + 1}")
+
+    # Получаем оригинальную задачу и контекст
+    task_text = user_tasks[user_id]['task_name']
+    user_context = context.user_data.get('user_context', 'Стандартная ситуация')
+
+    # Получаем обратную связь если есть
+    feedback = context.user_data.get('user_feedback', None)
+
+    # Удаляем старые сообщения
+    step_messages = context.user_data.get('step_messages', [])
+    for msg_id in step_messages:
+        try:
+            await context.bot.delete_message(chat_id=user_id, message_id=msg_id)
+        except Exception as e:
+            print(f"⚠️ Could not delete message {msg_id}: {e}")
+
+    context.user_data['step_messages'] = []
+
+    # Удаляем оригинальное финальное сообщение с кнопками
+    try:
+        await query.message.delete()
+    except Exception as e:
+        print(f"⚠️ Could not delete final message: {e}")
+
+    # Отправляем новое сообщение (не редактируем, т.к. старое удалено)
+    status_msg = await context.bot.send_message(
+        chat_id=user_id,
+        text="⏳ Полностью переписываю задачу с новым подходом..."
+    )
+
+    # Регенерируем задачу с обратной связью
+    await decompose_task_with_context(
+        update,
+        task_text,
+        user_context,
+        user_id,
+        message=status_msg,
+        skip_status_message=True,
+        feedback=feedback,
+        context_obj=context
+    )
+
 async def rewrite_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -777,12 +903,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Обновляем сообщение с расшифровкой
         await status_msg.edit_text(
             f"✅ Расшифровка голосового сообщения:\n\n\"{transcribed_text}\"\n\n"
-            f"Отправляю эту задачу на декомпозицию..."
+            f"Собираюсь уточнить..."
         )
 
         # Запускаем обработку расшифрованного текста
         # handle_task_from_text сама определит, это новая задача или контекст
-        await handle_task_from_text(update, context, transcribed_text)
+        # Передаём status_msg для редактирования
+        await handle_task_from_text(update, context, transcribed_text, status_msg)
 
     except Exception as e:
         print(f"❌ Error in handle_voice: {type(e).__name__}: {str(e)}")
@@ -796,7 +923,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-async def handle_task_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, task_text: str):
+async def handle_task_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, task_text: str, status_msg=None):
     """Вспомогательная функция для обработки задачи из текста (используется после расшифровки голоса)"""
     user_id = update.effective_user.id
 
@@ -812,7 +939,7 @@ async def handle_task_from_text(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['pending_task'] = None
 
         # Запускаем декомпозицию с контекстом
-        await decompose_task_with_context(update, task_to_decompose, user_context, user_id)
+        await decompose_task_with_context(update, task_to_decompose, user_context, user_id, context_obj=context)
         return
 
     # Генерируем персонализированные вопросы для контекста
@@ -850,12 +977,22 @@ async def handle_task_from_text(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("⏭ Пропустить контекст", callback_data="skip_context")],
         [InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
     ]
-    await update.message.reply_text(
-        f"📋 Расскажи немного о своей ситуации для более персонализированной декомпозиции:\n\n"
-        f"{questions_text}\n\n"
-        f"Или нажми 'Пропустить контекст' для стандартной декомпозиции.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+
+    # Если передано status_msg (из голосовых), редактируем его, иначе создаём новое
+    if status_msg:
+        await status_msg.edit_text(
+            f"📋 Расскажи немного о своей ситуации для более персонализированной декомпозиции:\n\n"
+            f"{questions_text}\n\n"
+            f"Или нажми 'Пропустить контекст' для стандартной декомпозиции.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.message.reply_text(
+            f"📋 Расскажи немного о своей ситуации для более персонализированной декомпозиции:\n\n"
+            f"{questions_text}\n\n"
+            f"Или нажми 'Пропустить контекст' для стандартной декомпозиции.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 # Debug handler для отладки всех входящих сообщений
 async def debug_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -898,6 +1035,7 @@ async def setup_application():
     application.add_handler(CallbackQueryHandler(skip_step, pattern="^skip_step$"))
     application.add_handler(CallbackQueryHandler(prev_step, pattern="^prev_step$"))
     application.add_handler(CallbackQueryHandler(cancel_task, pattern="^cancel_task$"))
+    application.add_handler(CallbackQueryHandler(rewrite_all, pattern="^rewrite_all$"))
     application.add_handler(CallbackQueryHandler(rewrite_step, pattern="^rewrite_step_"))
     application.add_handler(CallbackQueryHandler(edit_single_step, pattern="^edit_single_step_"))
     application.add_handler(CallbackQueryHandler(cancel_edit_step, pattern="^cancel_edit_step$"))
@@ -963,6 +1101,7 @@ def run_bot_polling():
         application_instance.add_handler(CallbackQueryHandler(skip_step, pattern="^skip_step$"))
         application_instance.add_handler(CallbackQueryHandler(prev_step, pattern="^prev_step$"))
         application_instance.add_handler(CallbackQueryHandler(cancel_task, pattern="^cancel_task$"))
+        application_instance.add_handler(CallbackQueryHandler(rewrite_all, pattern="^rewrite_all$"))
         application_instance.add_handler(CallbackQueryHandler(rewrite_step, pattern="^rewrite_step_"))
         application_instance.add_handler(CallbackQueryHandler(edit_single_step, pattern="^edit_single_step_"))
         application_instance.add_handler(CallbackQueryHandler(cancel_edit_step, pattern="^cancel_edit_step$"))
