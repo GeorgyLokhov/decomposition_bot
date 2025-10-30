@@ -10,6 +10,7 @@ from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import google.generativeai as genai
 from dotenv import load_dotenv
+import assemblyai as aai
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -17,16 +18,22 @@ load_dotenv()
 # Токены
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "https://rozysk-avto-bot.onrender.com") + "/webhook"
 
 # Диагностика ключей
 print(f"🔍 TELEGRAM_TOKEN: {'OK' if TELEGRAM_TOKEN else 'MISSING'}")
 print(f"🔍 GEMINI_KEY: {'OK (' + str(len(GEMINI_KEY)) + ' chars)' if GEMINI_KEY else 'MISSING'}")
+print(f"🔍 ASSEMBLYAI_API_KEY: {'OK' if ASSEMBLYAI_API_KEY else 'MISSING'}")
 print(f"🔍 WEBHOOK_URL: {WEBHOOK_URL}")
 
 # Настройка Gemini
 genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash-lite-preview-06-17')
+
+# Настройка AssemblyAI
+if ASSEMBLYAI_API_KEY:
+    aai.settings.api_key = ASSEMBLYAI_API_KEY
 
 app = Flask(__name__)
 
@@ -53,12 +60,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"📥 /start command from user {update.effective_user.id}")
     await update.message.reply_text(
         "Отправь мне задачу, я разобью её на абсурдно простые шаги по 5-10 минут.\n\n"
-        "Например: 'написать статью про AI' или 'разобрать почту'\n\n"
-        "📊 /history - посмотреть историю задач"
+        "Например: 'написать статью про AI' или 'разобрать почту'"
     )
 
 async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
+    # Debug: выводим информацию о типе сообщения
+    print(f"🔍 handle_task called from user {user_id}")
+    print(f"🔍 Message type - text: {update.message.text is not None}, voice: {update.message.voice is not None}, audio: {update.message.audio is not None}")
+
     task_text = update.message.text
     print(f"📥 Task received from user {user_id}: {task_text}")
 
@@ -119,30 +130,60 @@ async def handle_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Не смог распарсить шаги. Используй формат: Шаг 1 (5 мин): действие")
             return
 
+    # Генерируем персонализированные вопросы для контекста
+    print(f"🤖 Generating context questions for task: {task_text[:50]}...")
+
+    prompt_template = load_prompt('context_questions.txt')
+    if not prompt_template:
+        # Fallback на стандартные вопросы
+        questions_text = (
+            "• Где ты сейчас находишься?\n"
+            "• Сколько у тебя времени?\n"
+            "• Какие ресурсы доступны?\n"
+            "• Твоё текущее состояние?"
+        )
+    else:
+        try:
+            prompt = prompt_template.replace('{task}', task_text)
+            response = model.generate_content(prompt)
+            questions_text = response.text.strip()
+            print(f"✅ Generated personalized questions")
+        except Exception as e:
+            print(f"⚠️ Error generating questions: {e}, using fallback")
+            questions_text = (
+                "• Где ты сейчас находишься?\n"
+                "• Сколько у тебя времени?\n"
+                "• Какие ресурсы доступны?\n"
+                "• Твоё текущее состояние?"
+            )
+
     # Запрашиваем контекст перед декомпозицией
     context.user_data['waiting_for_context'] = True
     context.user_data['pending_task'] = task_text
 
-    keyboard = [[InlineKeyboardButton("⏭ Пропустить контекст", callback_data="skip_context")]]
+    keyboard = [
+        [InlineKeyboardButton("⏭ Пропустить контекст", callback_data="skip_context")],
+        [InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
+    ]
     await update.message.reply_text(
-        "📋 Расскажи немного о своей ситуации для более персонализированной декомпозиции:\n\n"
-        "• Где ты сейчас находишься?\n"
-        "• Сколько у тебя времени?\n"
-        "• Какие ресурсы доступны?\n"
-        "• Твоё текущее состояние?\n\n"
-        "Или нажми 'Пропустить контекст' для стандартной декомпозиции.",
+        f"📋 Расскажи немного о своей ситуации для более персонализированной декомпозиции:\n\n"
+        f"{questions_text}\n\n"
+        f"Или нажми 'Пропустить контекст' для стандартной декомпозиции.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return
 
-async def decompose_task_with_context(update: Update, task_text: str, user_context: str, user_id: int):
+async def decompose_task_with_context(update: Update, task_text: str, user_context: str, user_id: int, message=None, skip_status_message=False):
     """Декомпозирует задачу с учетом контекста пользователя"""
-    await update.message.reply_text("⏳ Декомпозирую задачу с учетом твоего контекста...")
+    # Определяем откуда отправлять сообщения - из update.message или переданный message
+    msg = message if message else update.message
+    if not skip_status_message:
+        await msg.reply_text("⏳ Декомпозирую задачу с учетом твоего контекста...")
 
     # Загружаем промпт из файла
     prompt_template = load_prompt('decompose_task.txt')
     if not prompt_template:
-        await update.message.reply_text("Ошибка: не найден файл с инструкциями для AI")
+        await msg.reply_text("Ошибка: не найден файл с инструкциями для AI")
         return
 
     prompt = prompt_template.replace('{task}', task_text).replace('{context}', user_context)
@@ -160,7 +201,7 @@ async def decompose_task_with_context(update: Update, task_text: str, user_conte
 
         if not steps:
             print(f"⚠️ No steps parsed from response")
-            await update.message.reply_text("Не смог распарсить шаги. Попробуй переформулировать задачу.")
+            await msg.reply_text("Не смог распарсить шаги. Попробуй переформулировать задачу.")
             return
 
         user_tasks[user_id] = {
@@ -177,7 +218,7 @@ async def decompose_task_with_context(update: Update, task_text: str, user_conte
                 [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{idx}"),
                  InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{idx}")]
             ]
-            await update.message.reply_text(
+            await msg.reply_text(
                 step,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
@@ -187,7 +228,7 @@ async def decompose_task_with_context(update: Update, task_text: str, user_conte
             [InlineKeyboardButton("▶️ Начать", callback_data="start_steps")],
             [InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
         ]
-        await update.message.reply_text(
+        await msg.reply_text(
             f"📋 Всего шагов: {len(steps)}",
             reply_markup=InlineKeyboardMarkup(final_keyboard)
         )
@@ -197,7 +238,7 @@ async def decompose_task_with_context(update: Update, task_text: str, user_conte
     except Exception as e:
         print(f"❌ ERROR in decompose_task_with_context: {type(e).__name__}: {str(e)}")
         traceback.print_exc()
-        await update.message.reply_text(f"Произошла ошибка: {type(e).__name__}: {str(e)}")
+        await msg.reply_text(f"Произошла ошибка: {type(e).__name__}: {str(e)}")
 
 async def edit_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -205,13 +246,17 @@ async def edit_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if user_id not in user_tasks:
-        await query.edit_message_text("Задача не найдена. Отправь новую.")
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена. Отправь новую.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     steps = user_tasks[user_id]['steps']
     steps_list = '\n'.join(steps)
 
-    keyboard = [[InlineKeyboardButton("✅ Сохранить и начать", callback_data="start_steps")]]
+    keyboard = [
+        [InlineKeyboardButton("✅ Сохранить и начать", callback_data="start_steps")],
+        [InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
+    ]
 
     await query.edit_message_text(
         f"Текущий список шагов:\n\n{steps_list}\n\n"
@@ -232,7 +277,8 @@ async def skip_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     task_text = context.user_data.get('pending_task')
     if not task_text:
-        await query.edit_message_text("Задача не найдена.")
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     print(f"⏭ User {user_id} skipped context")
@@ -243,7 +289,7 @@ async def skip_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Декомпозируем без контекста (используем дефолтный контекст)
     await query.edit_message_text("⏳ Декомпозирую задачу...")
-    await decompose_task_with_context(update, task_text, "Стандартная ситуация", user_id)
+    await decompose_task_with_context(update, task_text, "Стандартная ситуация", user_id, message=query.message, skip_status_message=True)
 
 async def start_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -253,7 +299,8 @@ async def start_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"▶️ User {user_id} started steps")
 
     if user_id not in user_tasks:
-        await query.edit_message_text("Задача не найдена. Отправь новую.")
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена. Отправь новую.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     user_tasks[user_id]['started_at'] = datetime.now()
@@ -278,7 +325,6 @@ async def send_current_step(query, user_id, context):
         user_history[user_id].append(task_data.copy())
 
         keyboard = [
-            [InlineKeyboardButton("📊 История задач", callback_data="show_history")],
             [InlineKeyboardButton("➕ Новая задача", callback_data="new_task")]
         ]
 
@@ -306,9 +352,7 @@ async def send_current_step(query, user_id, context):
         [InlineKeyboardButton("✅ Готово", callback_data="next_step"),
          InlineKeyboardButton("⏭ Пропустить", callback_data="skip_step")],
         [InlineKeyboardButton("◀️ Назад", callback_data="prev_step"),
-         InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")],
-        [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{current}"),
-         InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{current}")]
+         InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
     ]
 
     # Запускаем таймер в реальном времени
@@ -379,9 +423,7 @@ async def update_timer(query, user_id, total_minutes, step_num, context):
                 [InlineKeyboardButton("✅ Готово", callback_data="next_step"),
                  InlineKeyboardButton("⏭ Пропустить", callback_data="skip_step")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="prev_step"),
-                 InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")],
-                [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{step_num}"),
-                 InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")]
+                 InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
             ]
 
             try:
@@ -408,7 +450,8 @@ async def next_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"➡️ User {user_id} clicked next step")
 
     if user_id not in user_tasks:
-        await query.edit_message_text("Задача не найдена.")
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     # Отменяем таймер текущего шага
@@ -426,7 +469,8 @@ async def skip_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"⏭ User {user_id} skipped step")
 
     if user_id not in user_tasks:
-        await query.edit_message_text("Задача не найдена.")
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     # Отменяем таймер текущего шага
@@ -438,13 +482,12 @@ async def skip_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def prev_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer("◀️ Возврат к предыдущему шагу")
     user_id = update.effective_user.id
 
-    print(f"◀️ User {user_id} went back to previous step")
-
     if user_id not in user_tasks:
-        await query.edit_message_text("Задача не найдена.")
+        await query.answer()
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     task_data = user_tasks[user_id]
@@ -454,6 +497,9 @@ async def prev_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if current <= 0:
         await query.answer("⚠️ Это первый шаг, нельзя вернуться назад")
         return
+
+    await query.answer("◀️ Возврат к предыдущему шагу")
+    print(f"◀️ User {user_id} went back to previous step")
 
     # Отменяем таймер текущего шага
     if user_id in timer_tasks:
@@ -470,7 +516,8 @@ async def cancel_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"❌ User {user_id} cancelled task")
 
     if user_id not in user_tasks:
-        await query.edit_message_text("Задача не найдена.")
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     # Отменяем таймер
@@ -499,7 +546,8 @@ async def rewrite_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"🔄 User {user_id} requested rewrite for step {step_num}")
 
     if user_id not in user_tasks:
-        await query.edit_message_text("Задача не найдена.")
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     task_data = user_tasks[user_id]
@@ -541,7 +589,8 @@ async def rewrite_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Обновляем сообщение с новым текстом шага и теми же кнопками
         keyboard = [
             [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{step_num}"),
-             InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")]
+             InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")],
+            [InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
         ]
         await query.edit_message_text(new_step, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -560,7 +609,8 @@ async def edit_single_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"✏️ User {user_id} requested edit for step {step_num}")
 
     if user_id not in user_tasks:
-        await query.edit_message_text("Задача не найдена.")
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     task_data = user_tasks[user_id]
@@ -600,7 +650,8 @@ async def cancel_edit_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['editing_single_step'] = None
 
     if user_id not in user_tasks:
-        await query.edit_message_text("Задача не найдена.")
+        keyboard = [[InlineKeyboardButton("📝 Описать задачу", callback_data="new_task")]]
+        await query.edit_message_text("Задача не найдена.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     if step_num is None:
@@ -611,7 +662,8 @@ async def cancel_edit_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step_text = user_tasks[user_id]['steps'][step_num]
     keyboard = [
         [InlineKeyboardButton("🔄 Переписать", callback_data=f"rewrite_step_{step_num}"),
-         InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")]
+         InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_single_step_{step_num}")],
+        [InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
     ]
     await query.edit_message_text(step_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -680,14 +732,164 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(history_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает голосовые сообщения и транскрибирует их"""
+    user_id = update.effective_user.id
+    print(f"🎤 Voice message received from user {user_id}")
+
+    if not ASSEMBLYAI_API_KEY:
+        await update.message.reply_text("⚠️ Функция распознавания голоса временно недоступна. API ключ не настроен.")
+        return
+
+    # Отправляем статус "печатает"
+    status_msg = await update.message.reply_text("🎤 Расшифровываю голосовое сообщение...")
+
+    try:
+        # Получаем файл голосового сообщения
+        voice = update.message.voice
+        file = await context.bot.get_file(voice.file_id)
+
+        # Сохраняем временно на диск
+        voice_path = f"temp_voice_{user_id}_{voice.file_id}.oga"
+        await file.download_to_drive(voice_path)
+
+        print(f"📥 Voice file downloaded: {voice_path}")
+
+        # Транскрибируем с помощью AssemblyAI
+        transcriber = aai.Transcriber()
+        config = aai.TranscriptionConfig(language_code="ru")  # Русский язык
+
+        print(f"🔄 Starting transcription...")
+        transcript = transcriber.transcribe(voice_path, config=config)
+
+        # Удаляем временный файл
+        if os.path.exists(voice_path):
+            os.remove(voice_path)
+
+        if transcript.status == aai.TranscriptStatus.error:
+            print(f"❌ Transcription error: {transcript.error}")
+            await status_msg.edit_text(f"❌ Ошибка при расшифровке: {transcript.error}")
+            return
+
+        transcribed_text = transcript.text
+        print(f"✅ Transcription successful: {transcribed_text[:100]}...")
+
+        # Обновляем сообщение с расшифровкой
+        await status_msg.edit_text(
+            f"✅ Расшифровка голосового сообщения:\n\n\"{transcribed_text}\"\n\n"
+            f"Отправляю эту задачу на декомпозицию..."
+        )
+
+        # Запускаем обработку расшифрованного текста
+        # handle_task_from_text сама определит, это новая задача или контекст
+        await handle_task_from_text(update, context, transcribed_text)
+
+    except Exception as e:
+        print(f"❌ Error in handle_voice: {type(e).__name__}: {str(e)}")
+        traceback.print_exc()
+        await status_msg.edit_text(f"❌ Произошла ошибка при обработке голосового сообщения: {str(e)}")
+
+        # Удаляем временный файл если он существует
+        try:
+            if os.path.exists(voice_path):
+                os.remove(voice_path)
+        except:
+            pass
+
+async def handle_task_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, task_text: str):
+    """Вспомогательная функция для обработки задачи из текста (используется после расшифровки голоса)"""
+    user_id = update.effective_user.id
+
+    # Проверяем, не ожидается ли уже контекст (если пользователь отправил голосовое как контекст)
+    if context.user_data.get('waiting_for_context'):
+        user_context = task_text.strip()
+        task_to_decompose = context.user_data.get('pending_task')
+
+        print(f"📝 Context received from user {user_id} (voice): {user_context}")
+
+        # Сбрасываем флаг
+        context.user_data['waiting_for_context'] = False
+        context.user_data['pending_task'] = None
+
+        # Запускаем декомпозицию с контекстом
+        await decompose_task_with_context(update, task_to_decompose, user_context, user_id)
+        return
+
+    # Генерируем персонализированные вопросы для контекста
+    print(f"🤖 Generating context questions for task: {task_text[:50]}...")
+
+    prompt_template = load_prompt('context_questions.txt')
+    if not prompt_template:
+        # Fallback на стандартные вопросы
+        questions_text = (
+            "• Где ты сейчас находишься?\n"
+            "• Сколько у тебя времени?\n"
+            "• Какие ресурсы доступны?\n"
+            "• Твоё текущее состояние?"
+        )
+    else:
+        try:
+            prompt = prompt_template.replace('{task}', task_text)
+            response = model.generate_content(prompt)
+            questions_text = response.text.strip()
+            print(f"✅ Generated personalized questions")
+        except Exception as e:
+            print(f"⚠️ Error generating questions: {e}, using fallback")
+            questions_text = (
+                "• Где ты сейчас находишься?\n"
+                "• Сколько у тебя времени?\n"
+                "• Какие ресурсы доступны?\n"
+                "• Твоё текущее состояние?"
+            )
+
+    # Запрашиваем контекст перед декомпозицией
+    context.user_data['waiting_for_context'] = True
+    context.user_data['pending_task'] = task_text
+
+    keyboard = [
+        [InlineKeyboardButton("⏭ Пропустить контекст", callback_data="skip_context")],
+        [InlineKeyboardButton("❌ Отменить", callback_data="cancel_task")]
+    ]
+    await update.message.reply_text(
+        f"📋 Расскажи немного о своей ситуации для более персонализированной декомпозиции:\n\n"
+        f"{questions_text}\n\n"
+        f"Или нажми 'Пропустить контекст' для стандартной декомпозиции.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+# Debug handler для отладки всех входящих сообщений
+async def debug_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Логирует все входящие сообщения для отладки"""
+    msg = update.message
+    user_id = update.effective_user.id
+
+    print(f"\n🔍 DEBUG: Message received from user {user_id}")
+    print(f"🔍 Has text: {msg.text is not None}")
+    print(f"🔍 Has voice: {msg.voice is not None}")
+    print(f"🔍 Has audio: {msg.audio is not None}")
+    print(f"🔍 Has document: {msg.document is not None}")
+    print(f"🔍 Has photo: {msg.photo is not None if msg.photo else False}")
+    print(f"🔍 Content type: {msg.content_type if hasattr(msg, 'content_type') else 'unknown'}")
+
+    if msg.text:
+        print(f"🔍 Text content: {msg.text[:50]}")
+    if msg.voice:
+        print(f"🔍 Voice file_id: {msg.voice.file_id}")
+        print(f"🔍 Voice duration: {msg.voice.duration}s")
+    print()
+
 # Настройка приложения Telegram
 async def setup_application():
     global application
     print("🔧 Setting up Telegram application...")
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # DEBUG: универсальный handler для логирования всех сообщений (группа -1 = выполняется первым)
+    application.add_handler(MessageHandler(filters.ALL, debug_handler), group=-1)
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("history", history_command))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task))
     application.add_handler(CallbackQueryHandler(skip_context, pattern="^skip_context$"))
     application.add_handler(CallbackQueryHandler(start_steps, pattern="^start_steps$"))
@@ -747,8 +949,12 @@ def run_bot_polling():
         application_builder = Application.builder().token(TELEGRAM_TOKEN)
         application_instance = application_builder.build()
 
+        # DEBUG: универсальный handler для логирования всех сообщений (группа -1 = выполняется первым)
+        application_instance.add_handler(MessageHandler(filters.ALL, debug_handler), group=-1)
+
         application_instance.add_handler(CommandHandler("start", start))
         application_instance.add_handler(CommandHandler("history", history_command))
+        application_instance.add_handler(MessageHandler(filters.VOICE, handle_voice))
         application_instance.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task))
         application_instance.add_handler(CallbackQueryHandler(skip_context, pattern="^skip_context$"))
         application_instance.add_handler(CallbackQueryHandler(start_steps, pattern="^start_steps$"))
