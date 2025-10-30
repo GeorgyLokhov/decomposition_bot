@@ -1,0 +1,6 @@
+python-telegram-bot
+flask
+google-generativeai
+python-dotenv
+assemblyai
+requests
