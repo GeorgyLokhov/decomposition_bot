@@ -29,7 +29,7 @@ print(f"🔍 WEBHOOK_URL: {WEBHOOK_URL}")
 
 # Настройка Gemini
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash-lite-preview-06-17')
+model = genai.GenerativeModel('gemini-2.0-flash-lite')
 
 # Настройка AssemblyAI
 if ASSEMBLYAI_API_KEY:
